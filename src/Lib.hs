@@ -6,7 +6,9 @@ import           Control.Monad                  ( when )
 import           Data.Text                      ( isPrefixOf
                                                 , toLower
                                                 , Text
+                                                , pack
                                                 )
+import           System.Environment
 import           System.Random
 import qualified Data.Text.IO                  as TIO
 
@@ -16,11 +18,9 @@ import qualified Discord.Requests              as R
 
 bigbot :: IO ()
 bigbot = do
-  userFacingError <- runDiscord $ def
-    { discordToken   =
-      "NjU1OTI5MjM4ODI5OTI0MzUz.XfbQHw.ZHvs3nCZhfXIjQJt_9_6vSfowqk"
-    , discordOnEvent = eventHandler
-    }
+  token           <- pack <$> getEnv "BIGBOT_TOKEN"
+  userFacingError <- runDiscord
+    $ def { discordToken = token, discordOnEvent = eventHandler }
   TIO.putStrLn userFacingError
 
 eventHandler :: DiscordHandle -> Event -> IO ()
