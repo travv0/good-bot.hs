@@ -2,7 +2,9 @@
 
 module Lib where
 
-import           Control.Monad                  ( when )
+import           Control.Monad                  ( when
+                                                , void
+                                                )
 import           Data.Text                      ( isPrefixOf
                                                 , toLower
                                                 , Text
@@ -30,17 +32,12 @@ eventHandler dis event = case event of
       chamber <- (`mod` 6) <$> (randomIO :: IO Int)
       case (chamber, messageGuild m) of
         (0, Just gId) -> do
-          _ <- restCall dis (R.CreateMessage (messageChannel m) "Bang!")
-          _ <- restCall
-            dis
-            (R.CreateGuildBan gId
-                              (userId $ messageAuthor m)
-                              (R.CreateGuildBanOpts Nothing (Just "Bang!"))
-            )
-          pure ()
-        _ -> do
-          _ <- restCall dis (R.CreateMessage (messageChannel m) "Click.")
-          pure ()
+          void $ restCall dis $ R.CreateMessage (messageChannel m) "Bang!"
+          void $ restCall dis $ R.CreateGuildBan
+            gId
+            (userId $ messageAuthor m)
+            (R.CreateGuildBanOpts Nothing (Just "Bang!"))
+        _ -> void $ restCall dis $ R.CreateMessage (messageChannel m) "Click."
   _ -> pure ()
 
 fromBot :: Message -> Bool
