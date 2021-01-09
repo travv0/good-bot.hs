@@ -1,8 +1,10 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Lib where
 
 import Control.Monad (void, when)
+import Control.Monad.Reader
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -21,31 +23,52 @@ bigbot = do
     T.putStrLn userFacingError
 
 eventHandler :: D.DiscordHandle -> D.Event -> IO ()
-eventHandler dis event = case event of
-    D.MessageCreate message -> messageCreate dis message
-    D.TypingStart typingInfo -> typingStart dis typingInfo
+eventHandler dis event = flip runReaderT dis $ case event of
+    D.MessageCreate message -> messageCreate message
+    D.TypingStart typingInfo -> typingStart typingInfo
     _ -> pure ()
 
-messageCreate :: D.DiscordHandle -> D.Message -> IO ()
-messageCreate dis message =
+messageCreate :: (MonadIO m, MonadReader D.DiscordHandle m) => D.Message -> m ()
+messageCreate message = do
+    dis <- ask
     when (not (fromBot message) && isRussianRoulette (D.messageText message)) $ do
-        chamber <- (`mod` 6) <$> (randomIO :: IO Int)
+        chamber <- liftIO $ (`mod` 6) <$> (randomIO :: IO Int)
         case (chamber, D.messageGuild message) of
             (0, Just gId) -> do
-                D.restCall dis $ D.CreateMessage (D.messageChannel message) "Bang!"
-                void $
-                    D.restCall dis $
-                        D.CreateGuildBan
-                            gId
-                            (D.userId $ D.messageAuthor message)
-                            (D.CreateGuildBanOpts Nothing (Just "Bang!"))
-            _ -> void $ D.restCall dis $ D.CreateMessage (D.messageChannel message) "Click."
+                createMessage (D.messageChannel message) response
+                createGuildBan gId (D.userId $ D.messageAuthor message) response
+              where
+                response = "Bang!"
+            _ -> createMessage (D.messageChannel message) "Click."
 
-typingStart :: D.DiscordHandle -> D.TypingInfo -> IO ()
-typingStart dis (D.TypingInfo userId channelId utcTime) = do
-    shouldReply <- (== 0) . (`mod` 1000) <$> (randomIO :: IO Int)
-    when shouldReply $
-        void $ D.restCall dis $ D.CreateMessage channelId $ T.pack $ "shut up <@" <> show userId <> ">"
+typingStart :: (MonadIO m, MonadReader D.DiscordHandle m) => D.TypingInfo -> m ()
+typingStart (D.TypingInfo userId channelId utcTime) = do
+    dis <- ask
+    liftIO $ do
+        shouldReply <- (== 0) . (`mod` 1000) <$> (randomIO :: IO Int)
+        when shouldReply $
+            void $ D.restCall dis $ D.CreateMessage channelId $ T.pack $ "shut up <@" <> show userId <> ">"
+
+createMessage :: (MonadReader D.DiscordHandle m, MonadIO m) => D.ChannelId -> Text -> m ()
+createMessage channelId message = do
+    dis <- ask
+    liftIO $ void $ D.restCall dis $ D.CreateMessage channelId message
+
+createGuildBan ::
+    (MonadReader D.DiscordHandle m, MonadIO m) =>
+    D.GuildId ->
+    D.UserId ->
+    Text ->
+    m ()
+createGuildBan guildId userId banMessage = do
+    dis <- ask
+    liftIO $
+        void $
+            D.restCall dis $
+                D.CreateGuildBan
+                    guildId
+                    userId
+                    (D.CreateGuildBanOpts Nothing (Just banMessage))
 
 fromBot :: D.Message -> Bool
 fromBot m = D.userIsBot (D.messageAuthor m)
