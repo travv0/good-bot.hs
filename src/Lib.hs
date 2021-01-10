@@ -30,7 +30,6 @@ eventHandler dis event = flip runReaderT dis $ case event of
 
 messageCreate :: (MonadIO m, MonadReader D.DiscordHandle m) => D.Message -> m ()
 messageCreate message = do
-    dis <- ask
     when (not (fromBot message) && isRussianRoulette (D.messageText message)) $ do
         chamber <- liftIO $ (`mod` 6) <$> (randomIO :: IO Int)
         case (chamber, D.messageGuild message) of
@@ -42,12 +41,10 @@ messageCreate message = do
             _ -> createMessage (D.messageChannel message) "Click."
 
 typingStart :: (MonadIO m, MonadReader D.DiscordHandle m) => D.TypingInfo -> m ()
-typingStart (D.TypingInfo userId channelId utcTime) = do
-    dis <- ask
-    liftIO $ do
-        shouldReply <- (== 0) . (`mod` 1000) <$> (randomIO :: IO Int)
-        when shouldReply $
-            void $ D.restCall dis $ D.CreateMessage channelId $ T.pack $ "shut up <@" <> show userId <> ">"
+typingStart (D.TypingInfo userId channelId _utcTime) = do
+    shouldReply <- liftIO $ (== 0) . (`mod` 1000) <$> (randomIO :: IO Int)
+    when shouldReply $
+        createMessage channelId $ T.pack $ "shut up <@" <> show userId <> ">"
 
 createMessage :: (MonadReader D.DiscordHandle m, MonadIO m) => D.ChannelId -> Text -> m ()
 createMessage channelId message = do
