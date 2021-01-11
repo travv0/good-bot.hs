@@ -28,7 +28,7 @@ dependencies:
 - lens-aeson
 - mtl
 - random
-- string-conversions
+- split
 - text
 - wreq
 
