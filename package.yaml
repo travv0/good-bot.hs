@@ -21,10 +21,16 @@ description:         Please see the README on GitHub at <https://github.com/gith
 
 dependencies:
 - base >= 4.7 && < 5
+- aeson
+- bytestring
 - discord-haskell
+- lens
+- lens-aeson
 - mtl
 - random
+- string-conversions
 - text
+- wreq
 
 library:
   source-dirs: src
