@@ -2,7 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Lib where
+module Lib (bigbot) where
 
 import Control.Applicative (Alternative (empty))
 import Control.Lens ((&), (.~), (^.))
@@ -10,13 +10,13 @@ import Control.Monad (when)
 import Control.Monad.Reader (MonadIO (..), MonadReader (ask), ReaderT (runReaderT), forM_)
 import Data.Aeson (FromJSON (parseJSON), Value (Object), eitherDecode, (.:))
 import qualified Data.ByteString.Lazy as BSL
-import Data.Text (Text, chunksOf)
+import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
+import qualified Data.Text.Encoding as T
 import qualified Data.Text.IO as T
 import qualified Discord as D
+import qualified Discord.Internal.Rest as D
 import qualified Discord.Requests as D
-import qualified Discord.Types as D
 import GHC.Generics (Generic)
 import Network.Wreq (Response, defaults, get, getWith, header, param, responseBody)
 import qualified Network.Wreq as W
@@ -49,15 +49,18 @@ typingStart (D.TypingInfo userId channelId _utcTime) = do
     when shouldReply $
         createMessage channelId $ T.pack $ "shut up <@" <> show userId <> ">"
 
+restCall :: (MonadReader D.DiscordHandle m, MonadIO m, FromJSON a, D.Request (r a)) => r a -> m ()
+restCall request = do
+    dis <- ask
+    r <- liftIO $ D.restCall dis request
+    case r of
+        Right _ -> return ()
+        Left err -> liftIO $ print err
+
 createMessage :: (MonadReader D.DiscordHandle m, MonadIO m) => D.ChannelId -> Text -> m ()
 createMessage channelId message = do
-    dis <- ask
-    let chunks = chunksOf 2000 message
-    forM_ chunks $ \chunk -> do
-        r <- liftIO $ D.restCall dis $ D.CreateMessage channelId chunk
-        case r of
-            Right _ -> return ()
-            Left err -> liftIO $ print err
+    let chunks = T.chunksOf 2000 message
+    forM_ chunks $ \chunk -> restCall $ D.CreateMessage channelId chunk
 
 createGuildBan ::
     (MonadReader D.DiscordHandle m, MonadIO m) =>
@@ -65,18 +68,12 @@ createGuildBan ::
     D.UserId ->
     Text ->
     m ()
-createGuildBan guildId userId banMessage = do
-    dis <- ask
-    r <-
-        liftIO $
-            D.restCall dis $
-                D.CreateGuildBan
-                    guildId
-                    userId
-                    (D.CreateGuildBanOpts Nothing (Just banMessage))
-    case r of
-        Right _ -> return ()
-        Left err -> liftIO $ print err
+createGuildBan guildId userId banMessage =
+    restCall $
+        D.CreateGuildBan
+            guildId
+            userId
+            (D.CreateGuildBanOpts Nothing (Just banMessage))
 
 fromBot :: D.Message -> Bool
 fromBot m = D.userIsBot (D.messageAuthor m)
@@ -95,11 +92,11 @@ russianRoulette message = do
 isRussianRoulette :: Text -> Bool
 isRussianRoulette = ("!rr" `T.isPrefixOf`) . T.toLower
 
-dictionaryKey :: IO Text
-dictionaryKey = T.pack <$> getEnv "BIGBOT_DICT_KEY"
+dictionaryKey :: MonadIO m => m Text
+dictionaryKey = liftIO $ T.pack <$> getEnv "BIGBOT_DICT_KEY"
 
-urbanKey :: IO Text
-urbanKey = T.pack <$> getEnv "BIGBOT_URBAN_KEY"
+urbanKey :: MonadIO m => m Text
+urbanKey = liftIO $ T.pack <$> getEnv "BIGBOT_URBAN_KEY"
 
 data Definition = Definition
     { defPartOfSpeech :: Maybe Text
@@ -116,8 +113,8 @@ instance FromJSON Definition where
 
 define :: (MonadIO m, MonadReader D.DiscordHandle m) => D.Message -> m ()
 define message = do
-    apiKey <- liftIO dictionaryKey
-    urbanApiKey <- liftIO urbanKey
+    apiKey <- dictionaryKey
+    urbanApiKey <- urbanKey
     let (_ : wordsToDefine) = words $ T.unpack $ D.messageText message
     forM_ wordsToDefine $ \word -> do
         moutput <- getOutput apiKey urbanApiKey word
@@ -186,7 +183,7 @@ getUrbanResponse apiKey word =
 urbanOpts :: Text -> String -> W.Options
 urbanOpts apiKey term =
     defaults
-        & header "x-rapidapi-key" .~ [encodeUtf8 apiKey]
+        & header "x-rapidapi-key" .~ [T.encodeUtf8 apiKey]
         & header "x-rapidapi-host" .~ ["mashape-community-urban-dictionary.p.rapidapi.com"]
         & header "useQueryString" .~ ["true"]
         & param "term" .~ [T.pack term]
@@ -197,7 +194,7 @@ newtype UrbanDefinition = UrbanDefinition {urbanDefDefinition :: [Text]}
 instance FromJSON UrbanDefinition where
     parseJSON (Object v) = do
         list <- v .: "list"
-        defs <- mapM (.: "definition") list
+        defs <- traverse (.: "definition") list
         return UrbanDefinition{urbanDefDefinition = defs}
     parseJSON _ = empty
 
