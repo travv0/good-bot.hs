@@ -4,9 +4,9 @@
 
 module Lib where
 
-import Control.Lens
+import Control.Lens ((^.))
 import Control.Monad (void, when)
-import Control.Monad.Reader
+import Control.Monad.Reader (MonadIO (..), MonadReader (ask), ReaderT (runReaderT), forM_)
 import Data.Aeson (FromJSON, decode)
 import Data.ByteString.Lazy (ByteString)
 import Data.Text (Text)
@@ -15,8 +15,8 @@ import qualified Data.Text.IO as T
 import qualified Discord as D
 import qualified Discord.Requests as D
 import qualified Discord.Types as D
-import GHC.Generics
-import Network.Wreq
+import GHC.Generics (Generic)
+import Network.Wreq (Response, get, responseBody)
 import System.Environment (getEnv)
 import System.Random (Random (randomIO))
 
@@ -107,15 +107,16 @@ buildOutput :: String -> Definition -> Text
 buildOutput word definition = do
     let shortDefinition = shortdef definition
         partOfSpeech = fl definition
-        formattedOutput =
-            "**" <> T.pack word <> "** *" <> partOfSpeech <> "*\n"
-                <> T.intercalate
-                    "\n\n"
-                    ( zipWith
+        definitions = case shortDefinition of
+            [def] -> def
+            defs ->
+                T.intercalate "\n\n" $
+                    zipWith
                         (\i def -> T.pack (show i) <> ". " <> def)
                         [1 :: Int ..]
-                        shortDefinition
-                    )
+                        defs
+        formattedOutput =
+            "**" <> T.pack word <> "** *" <> partOfSpeech <> "*\n" <> definitions
      in formattedOutput
 
 getOutput :: MonadIO m => Text -> String -> m (Maybe Text)
