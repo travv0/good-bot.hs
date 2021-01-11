@@ -98,7 +98,11 @@ define message = do
     let (_ : wordsToDefine) = words $ T.unpack $ D.messageText message
     forM_ wordsToDefine $ \word -> do
         moutput <- getOutput apiKey word
-        forM_ moutput (createMessage (D.messageChannel message))
+        case moutput of
+            Just output -> createMessage (D.messageChannel message) output
+            Nothing ->
+                createMessage (D.messageChannel message) $
+                    "No definition found for **" <> T.pack word <> "**"
 
 isDefine :: Text -> Bool
 isDefine = ("!define " `T.isPrefixOf`) . T.toLower
