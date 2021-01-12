@@ -225,8 +225,12 @@ respond message
         || "hello" `T.isInfixOf` T.toLower (D.messageText message)
         || "sup" `T.isInfixOf` T.toLower (D.messageText message)
         || "what" `T.isInfixOf` T.toLower (D.messageText message) && "up" `T.isInfixOf` T.toLower (D.messageText message)
-        || "howdy" `T.isInfixOf` T.toLower (D.messageText message) = do
+        || "howdy" `T.isInfixOf` T.toLower (D.messageText message) =
         createMessage (D.messageChannel message) "hi"
+    | "wb" `T.isInfixOf` T.toLower (D.messageText message)
+        || "welcom" `T.isInfixOf` T.toLower (D.messageText message)
+        || "welcum" `T.isInfixOf` T.toLower (D.messageText message) =
+        createMessage (D.messageChannel message) "thx"
     | otherwise = do
         let responses = ["what u want", "stfu"] :: [Text]
         responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
