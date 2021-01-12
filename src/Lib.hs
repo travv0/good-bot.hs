@@ -41,6 +41,9 @@ messageCreate :: (MonadIO m, MonadReader D.DiscordHandle m) => D.Message -> m ()
 messageCreate message
     | not (fromBot message) && isRussianRoulette (D.messageText message) = russianRoulette message
     | not (fromBot message) && isDefine (D.messageText message) = define message
+    | not (fromBot message) = do
+        forMe <- mentionsMe message
+        when forMe $ respond message
     | otherwise = return ()
 
 typingStart :: (MonadIO m, MonadReader D.DiscordHandle m) => D.TypingInfo -> m ()
@@ -204,3 +207,27 @@ decodeUrban = fmap urbanToDictionary . eitherDecode
 urbanToDictionary :: UrbanDefinition -> [Definition]
 urbanToDictionary (UrbanDefinition def) =
     [Definition Nothing def | not (null def)]
+
+mentionsMe :: (MonadReader D.DiscordHandle m, MonadIO m) => D.Message -> m Bool
+mentionsMe message = do
+    dis <- ask
+    cache <- liftIO $ D.readCache dis
+    return $ D.userId (D._currentUser cache) `elem` map D.userId (D.messageMentions message)
+
+respond :: (MonadReader D.DiscordHandle m, MonadIO m) => D.Message -> m ()
+respond message
+    | "thanks" `T.isInfixOf` T.toLower (D.messageText message)
+        || "thank you" `T.isInfixOf` T.toLower (D.messageText message)
+        || "thx" `T.isInfixOf` T.toLower (D.messageText message)
+        || "thk" `T.isInfixOf` T.toLower (D.messageText message) =
+        createMessage (D.messageChannel message) "u r welcome"
+    | "hi" `T.isInfixOf` T.toLower (D.messageText message)
+        || "hello" `T.isInfixOf` T.toLower (D.messageText message)
+        || "sup" `T.isInfixOf` T.toLower (D.messageText message)
+        || "what" `T.isInfixOf` T.toLower (D.messageText message) && "up" `T.isInfixOf` T.toLower (D.messageText message)
+        || "howdy" `T.isInfixOf` T.toLower (D.messageText message) = do
+        createMessage (D.messageChannel message) "hi"
+    | otherwise = do
+        let responses = ["what u want", "stfu"] :: [Text]
+        responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
+        createMessage (D.messageChannel message) $ responses !! responseNum
