@@ -7,7 +7,7 @@ module Lib (bigbot) where
 import Control.Applicative (Alternative (empty))
 import Control.Lens ((&), (.~), (^.))
 import Control.Monad (when)
-import Control.Monad.Reader (MonadIO (..), MonadReader (ask), ReaderT (runReaderT), forM_)
+import Control.Monad.Reader (MonadIO (..), MonadReader, ReaderT (runReaderT), asks, forM_)
 import Data.Aeson (FromJSON (parseJSON), Value (Object), eitherDecode, (.:))
 import qualified Data.ByteString.Lazy as BSL
 import Data.Text (Text)
@@ -23,6 +23,12 @@ import qualified Network.Wreq as W
 import System.Environment (getEnv)
 import System.Random (Random (randomIO))
 
+data Config = Config
+    { configDiscordHandle :: D.DiscordHandle
+    , configDictKey :: Text
+    , configUrbanKey :: Text
+    }
+
 bigbot :: IO ()
 bigbot = do
     token <- T.pack <$> getEnv "BIGBOT_TOKEN"
@@ -32,12 +38,21 @@ bigbot = do
     T.putStrLn userFacingError
 
 eventHandler :: D.DiscordHandle -> D.Event -> IO ()
-eventHandler dis event = flip runReaderT dis $ case event of
-    D.MessageCreate message -> messageCreate message
-    D.TypingStart typingInfo -> typingStart typingInfo
-    _ -> pure ()
+eventHandler dis event = do
+    dictKey <- T.pack <$> getEnv "BIGBOT_DICT_KEY"
+    urbanKey <- T.pack <$> getEnv "BIGBOT_URBAN_KEY"
+    let config =
+            Config
+                { configDiscordHandle = dis
+                , configDictKey = dictKey
+                , configUrbanKey = urbanKey
+                }
+    flip runReaderT config $ case event of
+        D.MessageCreate message -> messageCreate message
+        D.TypingStart typingInfo -> typingStart typingInfo
+        _ -> pure ()
 
-messageCreate :: (MonadIO m, MonadReader D.DiscordHandle m) => D.Message -> m ()
+messageCreate :: (MonadIO m, MonadReader Config m) => D.Message -> m ()
 messageCreate message
     | not (fromBot message) && isRussianRoulette (D.messageText message) = russianRoulette message
     | not (fromBot message) && isDefine (D.messageText message) = define message
@@ -46,27 +61,27 @@ messageCreate message
         when forMe $ respond message
     | otherwise = return ()
 
-typingStart :: (MonadIO m, MonadReader D.DiscordHandle m) => D.TypingInfo -> m ()
+typingStart :: (MonadIO m, MonadReader Config m) => D.TypingInfo -> m ()
 typingStart (D.TypingInfo userId channelId _utcTime) = do
     shouldReply <- liftIO $ (== 0) . (`mod` 1000) <$> (randomIO :: IO Int)
     when shouldReply $
         createMessage channelId $ T.pack $ "shut up <@" <> show userId <> ">"
 
-restCall :: (MonadReader D.DiscordHandle m, MonadIO m, FromJSON a, D.Request (r a)) => r a -> m ()
+restCall :: (MonadReader Config m, MonadIO m, FromJSON a, D.Request (r a)) => r a -> m ()
 restCall request = do
-    dis <- ask
+    dis <- asks configDiscordHandle
     r <- liftIO $ D.restCall dis request
     case r of
         Right _ -> return ()
         Left err -> liftIO $ print err
 
-createMessage :: (MonadReader D.DiscordHandle m, MonadIO m) => D.ChannelId -> Text -> m ()
+createMessage :: (MonadReader Config m, MonadIO m) => D.ChannelId -> Text -> m ()
 createMessage channelId message = do
     let chunks = T.chunksOf 2000 message
     forM_ chunks $ \chunk -> restCall $ D.CreateMessage channelId chunk
 
 createGuildBan ::
-    (MonadReader D.DiscordHandle m, MonadIO m) =>
+    (MonadReader Config m, MonadIO m) =>
     D.GuildId ->
     D.UserId ->
     Text ->
@@ -81,7 +96,7 @@ createGuildBan guildId userId banMessage =
 fromBot :: D.Message -> Bool
 fromBot m = D.userIsBot (D.messageAuthor m)
 
-russianRoulette :: (MonadIO m, MonadReader D.DiscordHandle m) => D.Message -> m ()
+russianRoulette :: (MonadIO m, MonadReader Config m) => D.Message -> m ()
 russianRoulette message = do
     chamber <- liftIO $ (`mod` 6) <$> (randomIO :: IO Int)
     case (chamber, D.messageGuild message) of
@@ -94,12 +109,6 @@ russianRoulette message = do
 
 isRussianRoulette :: Text -> Bool
 isRussianRoulette = ("!rr" `T.isPrefixOf`) . T.toLower
-
-dictionaryKey :: MonadIO m => m Text
-dictionaryKey = liftIO $ T.pack <$> getEnv "BIGBOT_DICT_KEY"
-
-urbanKey :: MonadIO m => m Text
-urbanKey = liftIO $ T.pack <$> getEnv "BIGBOT_URBAN_KEY"
 
 data Definition = Definition
     { defPartOfSpeech :: Maybe Text
@@ -114,13 +123,13 @@ instance FromJSON Definition where
         return Definition{defPartOfSpeech = partOfSpeech, defDefinitions = definitions}
     parseJSON _ = empty
 
-define :: (MonadIO m, MonadReader D.DiscordHandle m) => D.Message -> m ()
+define :: (MonadIO m, MonadReader Config m) => D.Message -> m ()
 define message = do
-    apiKey <- dictionaryKey
-    urbanApiKey <- urbanKey
+    dictKey <- asks configDictKey
+    urbanKey <- asks configUrbanKey
     let (_ : wordsToDefine) = words $ T.unpack $ D.messageText message
     forM_ wordsToDefine $ \word -> do
-        moutput <- getOutput apiKey urbanApiKey word
+        moutput <- getOutput dictKey urbanKey word
         case moutput of
             Just output -> createMessage (D.messageChannel message) output
             Nothing ->
@@ -208,13 +217,13 @@ urbanToDictionary :: UrbanDefinition -> [Definition]
 urbanToDictionary (UrbanDefinition def) =
     [Definition Nothing def | not (null def)]
 
-mentionsMe :: (MonadReader D.DiscordHandle m, MonadIO m) => D.Message -> m Bool
+mentionsMe :: (MonadReader Config m, MonadIO m) => D.Message -> m Bool
 mentionsMe message = do
-    dis <- ask
+    dis <- asks configDiscordHandle
     cache <- liftIO $ D.readCache dis
     return $ D.userId (D._currentUser cache) `elem` map D.userId (D.messageMentions message)
 
-respond :: (MonadReader D.DiscordHandle m, MonadIO m) => D.Message -> m ()
+respond :: (MonadReader Config m, MonadIO m) => D.Message -> m ()
 respond message
     | "thanks" `T.isInfixOf` T.toLower (D.messageText message)
         || "thank you" `T.isInfixOf` T.toLower (D.messageText message)
