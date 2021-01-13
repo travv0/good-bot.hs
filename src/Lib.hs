@@ -32,15 +32,18 @@ data Config = Config
 bigbot :: IO ()
 bigbot = do
     token <- T.pack <$> getEnv "BIGBOT_TOKEN"
-    userFacingError <-
-        D.runDiscord $
-            D.def{D.discordToken = token, D.discordOnEvent = eventHandler}
-    T.putStrLn userFacingError
-
-eventHandler :: D.DiscordHandle -> D.Event -> IO ()
-eventHandler dis event = do
     dictKey <- T.pack <$> getEnv "BIGBOT_DICT_KEY"
     urbanKey <- T.pack <$> getEnv "BIGBOT_URBAN_KEY"
+    userFacingError <-
+        D.runDiscord $
+            D.def
+                { D.discordToken = token
+                , D.discordOnEvent = eventHandler dictKey urbanKey
+                }
+    T.putStrLn userFacingError
+
+eventHandler :: Text -> Text -> D.DiscordHandle -> D.Event -> IO ()
+eventHandler dictKey urbanKey dis event = do
     let config =
             Config
                 { configDiscordHandle = dis
@@ -125,11 +128,9 @@ instance FromJSON Definition where
 
 define :: (MonadIO m, MonadReader Config m) => D.Message -> m ()
 define message = do
-    dictKey <- asks configDictKey
-    urbanKey <- asks configUrbanKey
     let (_ : wordsToDefine) = words $ T.unpack $ D.messageText message
     forM_ wordsToDefine $ \word -> do
-        moutput <- getOutput dictKey urbanKey word
+        moutput <- getOutput word
         case moutput of
             Just output -> createMessage (D.messageChannel message) output
             Nothing ->
@@ -161,10 +162,12 @@ buildOutput word definition = do
                 <> definitions
      in formattedOutput
 
-getOutput :: MonadIO m => Text -> Text -> String -> m (Maybe Text)
-getOutput apiKey urbanApiKey word = do
-    response <- getDictionaryResponse apiKey word
-    urbanResponse <- getUrbanResponse urbanApiKey word
+getOutput :: (MonadIO m, MonadReader Config m) => String -> m (Maybe Text)
+getOutput word = do
+    dictKey <- asks configDictKey
+    urbanKey <- asks configUrbanKey
+    response <- getDictionaryResponse dictKey word
+    urbanResponse <- getUrbanResponse urbanKey word
     case eitherDecode (response ^. responseBody) <> decodeUrban (urbanResponse ^. responseBody) of
         Right defs
             | not (null defs) ->
