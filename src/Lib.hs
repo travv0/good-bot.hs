@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Lib (bigbot) where
@@ -57,11 +58,13 @@ eventHandler dictKey urbanKey dis event = do
 
 messageCreate :: (MonadIO m, MonadReader Config m) => D.Message -> m ()
 messageCreate message
-    | not (fromBot message) && isRussianRoulette (D.messageText message) = russianRoulette message
-    | not (fromBot message) && isDefine (D.messageText message) = define message
     | not (fromBot message) = do
         forMe <- mentionsMe message
-        when forMe $ respond message
+        if
+                | isRussianRoulette (D.messageText message) -> russianRoulette message
+                | isDefine (D.messageText message) -> define message
+                | forMe -> respond message
+                | otherwise -> return ()
     | otherwise = return ()
 
 typingStart :: (MonadIO m, MonadReader Config m) => D.TypingInfo -> m ()
@@ -164,22 +167,27 @@ buildOutput word definition = do
 
 getOutput :: (MonadIO m, MonadReader Config m) => String -> m (Maybe Text)
 getOutput word = do
-    dictKey <- asks configDictKey
-    urbanKey <- asks configUrbanKey
-    response <- getDictionaryResponse dictKey word
-    urbanResponse <- getUrbanResponse urbanKey word
-    case eitherDecode (response ^. responseBody) <> decodeUrban (urbanResponse ^. responseBody) of
-        Right defs
-            | not (null defs) ->
-                return $
-                    Just $
-                        T.intercalate "\n\n" $
-                            map (buildOutput word) defs
-        Left err -> liftIO (print err) >> return Nothing
-        _ -> return Nothing
+    response <- getDictionaryResponse word
+    buildOutputHandleFail word (eitherDecode (response ^. responseBody)) $
+        Just $ do
+            urbanResponse <- getUrbanResponse word
+            buildOutputHandleFail word (decodeUrban (urbanResponse ^. responseBody)) Nothing
 
-getDictionaryResponse :: MonadIO m => Text -> String -> m (Response BSL.ByteString)
-getDictionaryResponse apiKey word =
+buildOutputHandleFail :: MonadIO m => String -> Either String [Definition] -> Maybe (m (Maybe Text)) -> m (Maybe Text)
+buildOutputHandleFail word (Right defs) _
+    | not (null defs) =
+        return $
+            Just $
+                T.intercalate "\n\n" $
+                    map (buildOutput word) defs
+buildOutputHandleFail _ (Left err) Nothing = liftIO (print err) >> return Nothing
+buildOutputHandleFail _ (Left _) (Just fallback) = fallback
+buildOutputHandleFail _ _ (Just fallback) = fallback
+buildOutputHandleFail _ (Right _) Nothing = return Nothing
+
+getDictionaryResponse :: (MonadIO m, MonadReader Config m) => String -> m (Response BSL.ByteString)
+getDictionaryResponse word = do
+    apiKey <- asks configDictKey
     liftIO $
         get $
             T.unpack $
@@ -188,8 +196,9 @@ getDictionaryResponse apiKey word =
                     <> "?key="
                     <> apiKey
 
-getUrbanResponse :: MonadIO m => Text -> String -> m (Response BSL.ByteString)
-getUrbanResponse apiKey word =
+getUrbanResponse :: (MonadIO m, MonadReader Config m) => String -> m (Response BSL.ByteString)
+getUrbanResponse word = do
+    apiKey <- asks configUrbanKey
     liftIO $
         getWith
             (urbanOpts apiKey word)
