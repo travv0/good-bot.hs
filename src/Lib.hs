@@ -122,7 +122,7 @@ russianRoulette message = do
             response = "Bang!"
         _ -> createMessage (D.messageChannel message) "Click."
 
-isRussianRoulette :: MonadIO m => CommandPredicate m
+isRussianRoulette :: Applicative f => CommandPredicate f
 isRussianRoulette = messageStartsWith "!rr"
 
 data Definition = Definition
@@ -149,7 +149,7 @@ define message = do
                 createMessage (D.messageChannel message) $
                     "No definition found for **" <> T.pack word <> "**"
 
-isDefine :: MonadIO m => CommandPredicate m
+isDefine :: Applicative f => CommandPredicate f
 isDefine = messageStartsWith "!define "
 
 buildOutput :: String -> Definition -> Text
@@ -266,14 +266,14 @@ respond message
         responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
         createMessage (D.messageChannel message) $ responses !! responseNum
 
-messageStartsWith :: MonadIO m => Text -> CommandPredicate m
+messageStartsWith :: Applicative f => Text -> CommandPredicate f
 messageStartsWith text =
-    return
+    pure
         . (text `T.isPrefixOf`)
         . T.toLower
         . D.messageText
 
-isLiar :: MonadIO m => CommandPredicate m
+isLiar :: Applicative f => CommandPredicate f
 isLiar = messageStartsWith "!liar"
 
 simpleReply :: (MonadIO m, MonadReader Config m) => Text -> Command m
