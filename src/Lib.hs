@@ -1,13 +1,13 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Lib (bigbot) where
 
 import Control.Applicative (Alternative (empty))
 import Control.Lens ((&), (.~), (^.))
-import Control.Monad (when)
+import Control.Monad (filterM, when)
 import Control.Monad.Reader (MonadIO (..), MonadReader, ReaderT (runReaderT), asks, forM_)
 import Data.Aeson (FromJSON (parseJSON), Value (Object), eitherDecode, (.:))
 import qualified Data.ByteString.Lazy as BSL
@@ -56,15 +56,24 @@ eventHandler dictKey urbanKey dis event = do
         D.TypingStart typingInfo -> typingStart typingInfo
         _ -> pure ()
 
+type Command m = D.Message -> m ()
+type CommandPredicate m = D.Message -> m Bool
+
+commands :: (MonadIO m, MonadReader Config m) => [(CommandPredicate m, Command m)]
+commands =
+    [ (isRussianRoulette, russianRoulette)
+    , (isDefine, define)
+    , (isLiar, simpleReply "Carl is a cuck")
+    , (mentionsMe, respond)
+    ]
+
 messageCreate :: (MonadIO m, MonadReader Config m) => D.Message -> m ()
 messageCreate message
     | not (fromBot message) = do
-        forMe <- mentionsMe message
-        if
-                | isRussianRoulette (D.messageText message) -> russianRoulette message
-                | isDefine (D.messageText message) -> define message
-                | forMe -> respond message
-                | otherwise -> return ()
+        matches <- filterM (\(p, _) -> p message) commands
+        case matches of
+            ((_, cmd) : _) -> cmd message
+            _ -> return ()
     | otherwise = return ()
 
 typingStart :: (MonadIO m, MonadReader Config m) => D.TypingInfo -> m ()
@@ -102,7 +111,7 @@ createGuildBan guildId userId banMessage =
 fromBot :: D.Message -> Bool
 fromBot m = D.userIsBot (D.messageAuthor m)
 
-russianRoulette :: (MonadIO m, MonadReader Config m) => D.Message -> m ()
+russianRoulette :: (MonadIO m, MonadReader Config m) => Command m
 russianRoulette message = do
     chamber <- liftIO $ (`mod` 6) <$> (randomIO :: IO Int)
     case (chamber, D.messageGuild message) of
@@ -113,8 +122,8 @@ russianRoulette message = do
             response = "Bang!"
         _ -> createMessage (D.messageChannel message) "Click."
 
-isRussianRoulette :: Text -> Bool
-isRussianRoulette = ("!rr" `T.isPrefixOf`) . T.toLower
+isRussianRoulette :: MonadIO m => CommandPredicate m
+isRussianRoulette = messageStartsWith "!rr"
 
 data Definition = Definition
     { defPartOfSpeech :: Maybe Text
@@ -129,7 +138,7 @@ instance FromJSON Definition where
         return Definition{defPartOfSpeech = partOfSpeech, defDefinitions = definitions}
     parseJSON _ = empty
 
-define :: (MonadIO m, MonadReader Config m) => D.Message -> m ()
+define :: (MonadIO m, MonadReader Config m) => Command m
 define message = do
     let (_ : wordsToDefine) = words $ T.unpack $ D.messageText message
     forM_ wordsToDefine $ \word -> do
@@ -140,8 +149,8 @@ define message = do
                 createMessage (D.messageChannel message) $
                     "No definition found for **" <> T.pack word <> "**"
 
-isDefine :: Text -> Bool
-isDefine = ("!define " `T.isPrefixOf`) . T.toLower
+isDefine :: MonadIO m => CommandPredicate m
+isDefine = messageStartsWith "!define "
 
 buildOutput :: String -> Definition -> Text
 buildOutput word definition = do
@@ -235,7 +244,7 @@ mentionsMe message = do
     cache <- liftIO $ D.readCache dis
     return $ D.userId (D._currentUser cache) `elem` map D.userId (D.messageMentions message)
 
-respond :: (MonadReader Config m, MonadIO m) => D.Message -> m ()
+respond :: (MonadIO m, MonadReader Config m) => Command m
 respond message
     | "thanks" `T.isInfixOf` T.toLower (D.messageText message)
         || "thank you" `T.isInfixOf` T.toLower (D.messageText message)
@@ -256,3 +265,19 @@ respond message
         let responses = ["what u want", "stfu"] :: [Text]
         responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
         createMessage (D.messageChannel message) $ responses !! responseNum
+
+messageStartsWith :: MonadIO m => Text -> CommandPredicate m
+messageStartsWith text =
+    return
+        . (text `T.isPrefixOf`)
+        . T.toLower
+        . D.messageText
+
+isLiar :: MonadIO m => CommandPredicate m
+isLiar = messageStartsWith "!liar"
+
+simpleReply :: (MonadIO m, MonadReader Config m) => Text -> Command m
+simpleReply replyText message =
+    createMessage
+        (D.messageChannel message)
+        replyText
