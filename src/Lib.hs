@@ -142,7 +142,7 @@ define :: (MonadIO m, MonadReader Config m) => Command m
 define message = do
     let (_ : wordsToDefine) = words $ T.unpack $ D.messageText message
     forM_ wordsToDefine $ \word -> do
-        moutput <- getOutput word
+        moutput <- getDefineOutput word
         case moutput of
             Just output -> createMessage (D.messageChannel message) output
             Nothing ->
@@ -152,8 +152,8 @@ define message = do
 isDefine :: Applicative f => CommandPredicate f
 isDefine = messageStartsWith "!define "
 
-buildOutput :: String -> Definition -> Text
-buildOutput word definition = do
+buildDefineOutput :: String -> Definition -> Text
+buildDefineOutput word definition = do
     let shortDefinition = defDefinitions definition
         mpartOfSpeech = defPartOfSpeech definition
         definitions = case shortDefinition of
@@ -174,25 +174,25 @@ buildOutput word definition = do
                 <> definitions
      in formattedOutput
 
-getOutput :: (MonadIO m, MonadReader Config m) => String -> m (Maybe Text)
-getOutput word = do
+getDefineOutput :: (MonadIO m, MonadReader Config m) => String -> m (Maybe Text)
+getDefineOutput word = do
     response <- getDictionaryResponse word
-    buildOutputHandleFail word (eitherDecode (response ^. responseBody)) $
+    buildDefineOutputHandleFail word (eitherDecode (response ^. responseBody)) $
         Just $ do
             urbanResponse <- getUrbanResponse word
-            buildOutputHandleFail word (decodeUrban (urbanResponse ^. responseBody)) Nothing
+            buildDefineOutputHandleFail word (decodeUrban (urbanResponse ^. responseBody)) Nothing
 
-buildOutputHandleFail :: MonadIO m => String -> Either String [Definition] -> Maybe (m (Maybe Text)) -> m (Maybe Text)
-buildOutputHandleFail word (Right defs) _
+buildDefineOutputHandleFail :: MonadIO m => String -> Either String [Definition] -> Maybe (m (Maybe Text)) -> m (Maybe Text)
+buildDefineOutputHandleFail word (Right defs) _
     | not (null defs) =
         return $
             Just $
                 T.intercalate "\n\n" $
-                    map (buildOutput word) defs
-buildOutputHandleFail _ (Left err) Nothing = liftIO (print err) >> return Nothing
-buildOutputHandleFail _ (Left _) (Just fallback) = fallback
-buildOutputHandleFail _ _ (Just fallback) = fallback
-buildOutputHandleFail _ (Right _) Nothing = return Nothing
+                    map (buildDefineOutput word) defs
+buildDefineOutputHandleFail _ (Left err) Nothing = liftIO (print err) >> return Nothing
+buildDefineOutputHandleFail _ (Left _) (Just fallback) = fallback
+buildDefineOutputHandleFail _ _ (Just fallback) = fallback
+buildDefineOutputHandleFail _ (Right _) Nothing = return Nothing
 
 getDictionaryResponse :: (MonadIO m, MonadReader Config m) => String -> m (Response BSL.ByteString)
 getDictionaryResponse word = do
@@ -253,6 +253,7 @@ respond message
         createMessage (D.messageChannel message) "u r welcome"
     | "hi" `T.isInfixOf` T.toLower (D.messageText message)
         || "hello" `T.isInfixOf` T.toLower (D.messageText message)
+        || "yo" `T.isInfixOf` T.toLower (D.messageText message)
         || "sup" `T.isInfixOf` T.toLower (D.messageText message)
         || "what" `T.isInfixOf` T.toLower (D.messageText message) && "up" `T.isInfixOf` T.toLower (D.messageText message)
         || "howdy" `T.isInfixOf` T.toLower (D.messageText message) =
@@ -261,8 +262,14 @@ respond message
         || "welcom" `T.isInfixOf` T.toLower (D.messageText message)
         || "welcum" `T.isInfixOf` T.toLower (D.messageText message) =
         createMessage (D.messageChannel message) "thx"
+    | "mornin" `T.isInfixOf` T.toLower (D.messageText message)
+        || "gm" `T.isInfixOf` T.toLower (D.messageText message) =
+        createMessage (D.messageChannel message) "gm"
+    | "night" `T.isInfixOf` T.toLower (D.messageText message)
+        || "gn" `T.isInfixOf` T.toLower (D.messageText message) =
+        createMessage (D.messageChannel message) "gn"
     | otherwise = do
-        let responses = ["what u want", "stfu"] :: [Text]
+        let responses = ["what u want", "stfu", "u r ugly"]
         responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
         createMessage (D.messageChannel message) $ responses !! responseNum
 
