@@ -40,6 +40,7 @@ bigbot = do
             D.def
                 { D.discordToken = token
                 , D.discordOnEvent = eventHandler dictKey urbanKey
+                , D.discordOnLog = T.putStrLn
                 }
     T.putStrLn userFacingError
 
