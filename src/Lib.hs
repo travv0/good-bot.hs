@@ -270,7 +270,7 @@ respond message
         || "gn" `T.isInfixOf` T.toLower (D.messageText message) =
         createMessage (D.messageChannel message) "gn"
     | otherwise = do
-        let responses = ["what u want", "stfu", "u r ugly"]
+        let responses = ["what u want", "stfu", "u r ugly", "i love u"]
         responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
         createMessage (D.messageChannel message) $ responses !! responseNum
 
