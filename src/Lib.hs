@@ -142,13 +142,13 @@ instance FromJSON Definition where
 define :: (MonadIO m, MonadReader Config m) => Command m
 define message = do
     let (_ : wordsToDefine) = words $ T.unpack $ D.messageText message
-    forM_ wordsToDefine $ \word -> do
-        moutput <- getDefineOutput word
-        case moutput of
-            Just output -> createMessage (D.messageChannel message) output
-            Nothing ->
-                createMessage (D.messageChannel message) $
-                    "No definition found for **" <> T.pack word <> "**"
+    let phrase = unwords wordsToDefine
+    moutput <- getDefineOutput phrase
+    case moutput of
+        Just output -> createMessage (D.messageChannel message) output
+        Nothing ->
+            createMessage (D.messageChannel message) $
+                "No definition found for **" <> T.pack phrase <> "**"
 
 isDefine :: Applicative f => CommandPredicate f
 isDefine = messageStartsWith "!define "
@@ -282,7 +282,7 @@ messageStartsWith text =
         . D.messageText
 
 isLiar :: Applicative f => CommandPredicate f
-isLiar = messageStartsWith "!liar"
+isLiar = messageStartsWith "-liar"
 
 simpleReply :: (MonadIO m, MonadReader Config m) => Text -> Command m
 simpleReply replyText message =
