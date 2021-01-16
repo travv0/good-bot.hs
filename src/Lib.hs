@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -18,7 +17,6 @@ import qualified Data.Text.IO as T
 import qualified Discord as D
 import qualified Discord.Internal.Rest as D
 import qualified Discord.Requests as D
-import GHC.Generics (Generic)
 import Network.Wreq (Response, defaults, get, getWith, header, param, responseBody)
 import qualified Network.Wreq as W
 import System.Environment (getEnv)
@@ -130,7 +128,7 @@ data Definition = Definition
     { defPartOfSpeech :: Maybe Text
     , defDefinitions :: [Text]
     }
-    deriving (Generic, Show)
+    deriving (Show)
 
 instance FromJSON Definition where
     parseJSON (Object v) = do
@@ -223,7 +221,7 @@ urbanOpts apiKey term =
         & param "term" .~ [T.pack term]
 
 newtype UrbanDefinition = UrbanDefinition {urbanDefDefinition :: [Text]}
-    deriving (Generic, Show)
+    deriving (Show)
 
 instance FromJSON UrbanDefinition where
     parseJSON (Object v) = do
