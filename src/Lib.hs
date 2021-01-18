@@ -62,7 +62,6 @@ commands :: (MonadIO m, MonadReader Config m) => [(CommandPredicate m, Command m
 commands =
     [ (isRussianRoulette, russianRoulette)
     , (isDefine, define)
-    , (isLiar, simpleReply "Carl is a cuck")
     , (mentionsMe, respond)
     ]
 
@@ -73,6 +72,8 @@ messageCreate message
         case matches of
             ((_, cmd) : _) -> cmd message
             _ -> return ()
+    | D.userId (D.messageAuthor message) == 235148962103951360 =
+        simpleReply "Carl is a cuck" message
     | otherwise = return ()
 
 typingStart :: (MonadIO m, MonadReader Config m) => D.TypingInfo -> m ()
@@ -254,7 +255,9 @@ respond message
         || "hello" `T.isInfixOf` T.toLower (D.messageText message)
         || "yo" `T.isInfixOf` T.toLower (D.messageText message)
         || "sup" `T.isInfixOf` T.toLower (D.messageText message)
-        || "what" `T.isInfixOf` T.toLower (D.messageText message) && "up" `T.isInfixOf` T.toLower (D.messageText message)
+        || ( "what" `T.isInfixOf` T.toLower (D.messageText message)
+                && "up" `T.isInfixOf` T.toLower (D.messageText message)
+           )
         || "howdy" `T.isInfixOf` T.toLower (D.messageText message) =
         createMessage (D.messageChannel message) "hi"
     | "wb" `T.isInfixOf` T.toLower (D.messageText message)
@@ -267,6 +270,11 @@ respond message
     | "night" `T.isInfixOf` T.toLower (D.messageText message)
         || "gn" `T.isInfixOf` T.toLower (D.messageText message) =
         createMessage (D.messageChannel message) "gn"
+    | "how" `T.isInfixOf` T.toLower (D.messageText message)
+        && ( " u" `T.isInfixOf` T.toLower (D.messageText message)
+                || " you" `T.isInfixOf` T.toLower (D.messageText message)
+           ) =
+        createMessage (D.messageChannel message) "i am fine thank u and u?"
     | otherwise = do
         let responses = ["what u want", "stfu", "u r ugly", "i love u"]
         responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
@@ -278,9 +286,6 @@ messageStartsWith text =
         . (text `T.isPrefixOf`)
         . T.toLower
         . D.messageText
-
-isLiar :: Applicative f => CommandPredicate f
-isLiar = messageStartsWith "-liar"
 
 simpleReply :: (MonadIO m, MonadReader Config m) => Text -> Command m
 simpleReply replyText message =
