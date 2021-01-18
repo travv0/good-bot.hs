@@ -19,7 +19,7 @@ import qualified Discord.Internal.Rest as D
 import qualified Discord.Requests as D
 import Network.Wreq (Response, defaults, get, getWith, header, param, responseBody)
 import qualified Network.Wreq as W
-import System.Environment (getEnv)
+import System.Environment (getEnv, lookupEnv)
 import System.Random (Random (randomIO))
 
 data Config = Config
@@ -33,14 +33,29 @@ bigbot = do
     token <- T.pack <$> getEnv "BIGBOT_TOKEN"
     dictKey <- T.pack <$> getEnv "BIGBOT_DICT_KEY"
     urbanKey <- T.pack <$> getEnv "BIGBOT_URBAN_KEY"
+    activityName <- fmap T.pack <$> lookupEnv "BIGBOT_ACTIVITY"
     userFacingError <-
         D.runDiscord $
             D.def
                 { D.discordToken = token
+                , D.discordOnStart = onStart activityName
                 , D.discordOnEvent = eventHandler dictKey urbanKey
                 , D.discordOnLog = T.putStrLn
                 }
     T.putStrLn userFacingError
+
+onStart :: Maybe Text -> D.DiscordHandle -> IO ()
+onStart mactivity dis =
+    D.sendCommand dis $
+        D.UpdateStatus $
+            D.UpdateStatusOpts
+                { D.updateStatusOptsSince = Nothing
+                , D.updateStatusOptsGame = case mactivity of
+                    Just activity -> Just $ D.Activity activity D.ActivityTypeGame Nothing
+                    Nothing -> Nothing
+                , D.updateStatusOptsNewStatus = D.UpdateStatusOnline
+                , D.updateStatusOptsAFK = False
+                }
 
 eventHandler :: Text -> Text -> D.DiscordHandle -> D.Event -> IO ()
 eventHandler dictKey urbanKey dis event = do
