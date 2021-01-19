@@ -83,8 +83,8 @@ type CommandPredicate m = D.Message -> m Bool
 
 commands :: (MonadIO m, MonadReader Config m) => [(CommandPredicate m, Command m)]
 commands =
-    [ (isRussianRoulette, russianRoulette)
-    , (isDefine, define)
+    [ (isCommand "rr", russianRoulette)
+    , (isCommand "define", define)
     , (mentionsMe, respond)
     ]
 
@@ -94,10 +94,10 @@ messageCreate message
         matches <- filterM (\(p, _) -> p message) commands
         case matches of
             ((_, cmd) : _) -> cmd message
-            _ -> return ()
+            _ -> pure ()
     | D.userId (D.messageAuthor message) == 235148962103951360 =
         simpleReply "Carl is a cuck" message
-    | otherwise = return ()
+    | otherwise = pure ()
 
 typingStart :: (MonadIO m, MonadReader Config m) => D.TypingInfo -> m ()
 typingStart (D.TypingInfo userId channelId _utcTime) = do
@@ -110,7 +110,7 @@ restCall request = do
     dis <- asks configDiscordHandle
     r <- liftIO $ D.restCall dis request
     case r of
-        Right _ -> return ()
+        Right _ -> pure ()
         Left err -> liftIO $ print err
 
 createMessage :: (MonadReader Config m, MonadIO m) => D.ChannelId -> Text -> m ()
@@ -145,9 +145,6 @@ russianRoulette message = do
             response = "Bang!"
         _ -> createMessage (D.messageChannel message) "Click."
 
-isRussianRoulette :: MonadReader Config m => CommandPredicate m
-isRussianRoulette = isCommand "rr"
-
 data Definition = Definition
     { defPartOfSpeech :: Maybe Text
     , defDefinitions :: [Text]
@@ -158,22 +155,22 @@ instance FromJSON Definition where
     parseJSON (Object v) = do
         partOfSpeech <- v .: "fl"
         definitions <- v .: "shortdef"
-        return Definition{defPartOfSpeech = partOfSpeech, defDefinitions = definitions}
+        pure Definition{defPartOfSpeech = partOfSpeech, defDefinitions = definitions}
     parseJSON _ = empty
 
 define :: (MonadIO m, MonadReader Config m) => Command m
 define message = do
     let (_ : wordsToDefine) = words $ T.unpack $ D.messageText message
-    let phrase = unwords wordsToDefine
-    moutput <- getDefineOutput phrase
-    case moutput of
-        Just output -> createMessage (D.messageChannel message) output
-        Nothing ->
-            createMessage (D.messageChannel message) $
-                "No definition found for **" <> T.pack phrase <> "**"
-
-isDefine :: MonadReader Config m => CommandPredicate m
-isDefine = isCommand "define "
+    case wordsToDefine of
+        [] -> createMessage (D.messageChannel message) "Missing word/phrase to define"
+        wtd -> do
+            let phrase = unwords wtd
+            moutput <- getDefineOutput phrase
+            case moutput of
+                Just output -> createMessage (D.messageChannel message) output
+                Nothing ->
+                    createMessage (D.messageChannel message) $
+                        "No definition found for **" <> T.pack phrase <> "**"
 
 buildDefineOutput :: String -> Definition -> Text
 buildDefineOutput word definition = do
@@ -208,14 +205,14 @@ getDefineOutput word = do
 buildDefineOutputHandleFail :: MonadIO m => String -> Either String [Definition] -> Maybe (m (Maybe Text)) -> m (Maybe Text)
 buildDefineOutputHandleFail word (Right defs) _
     | not (null defs) =
-        return $
+        pure $
             Just $
                 T.intercalate "\n\n" $
                     map (buildDefineOutput word) defs
-buildDefineOutputHandleFail _ (Left err) Nothing = liftIO (print err) >> return Nothing
+buildDefineOutputHandleFail _ (Left err) Nothing = liftIO (print err) >> pure Nothing
 buildDefineOutputHandleFail _ (Left _) (Just fallback) = fallback
 buildDefineOutputHandleFail _ _ (Just fallback) = fallback
-buildDefineOutputHandleFail _ (Right _) Nothing = return Nothing
+buildDefineOutputHandleFail _ (Right _) Nothing = pure Nothing
 
 getDictionaryResponse :: (MonadIO m, MonadReader Config m) => String -> m (Response BSL.ByteString)
 getDictionaryResponse word = do
@@ -251,7 +248,7 @@ instance FromJSON UrbanDefinition where
     parseJSON (Object v) = do
         list <- v .: "list"
         defs <- traverse (.: "definition") list
-        return UrbanDefinition{urbanDefDefinition = defs}
+        pure UrbanDefinition{urbanDefDefinition = defs}
     parseJSON _ = empty
 
 decodeUrban :: BSL.ByteString -> Either String [Definition]
@@ -265,7 +262,7 @@ mentionsMe :: (MonadReader Config m, MonadIO m) => D.Message -> m Bool
 mentionsMe message = do
     dis <- asks configDiscordHandle
     cache <- liftIO $ D.readCache dis
-    return $ D.userId (D._currentUser cache) `elem` map D.userId (D.messageMentions message)
+    pure $ D.userId (D._currentUser cache) `elem` map D.userId (D.messageMentions message)
 
 respond :: (MonadIO m, MonadReader Config m) => Command m
 respond message
