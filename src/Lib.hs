@@ -10,6 +10,7 @@ import Control.Monad (filterM, when)
 import Control.Monad.Reader (MonadIO (..), MonadReader, ReaderT (runReaderT), asks, forM_)
 import Data.Aeson (FromJSON (parseJSON), Value (Object), eitherDecode, (.:))
 import qualified Data.ByteString.Lazy as BSL
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -26,6 +27,7 @@ data Config = Config
     { configDiscordHandle :: D.DiscordHandle
     , configDictKey :: Text
     , configUrbanKey :: Text
+    , configCommandPrefix :: Text
     }
 
 bigbot :: IO ()
@@ -34,12 +36,17 @@ bigbot = do
     dictKey <- T.pack <$> getEnv "BIGBOT_DICT_KEY"
     urbanKey <- T.pack <$> getEnv "BIGBOT_URBAN_KEY"
     activityName <- fmap T.pack <$> lookupEnv "BIGBOT_ACTIVITY"
+    commandPrefix <- fmap T.pack <$> lookupEnv "BIGBOT_PREFIX"
     userFacingError <-
         D.runDiscord $
             D.def
                 { D.discordToken = token
                 , D.discordOnStart = onStart activityName
-                , D.discordOnEvent = eventHandler dictKey urbanKey
+                , D.discordOnEvent =
+                    eventHandler
+                        dictKey
+                        urbanKey
+                        (fromMaybe "!" commandPrefix)
                 , D.discordOnLog = T.putStrLn
                 }
     T.putStrLn userFacingError
@@ -57,13 +64,14 @@ onStart mactivity dis =
                 , D.updateStatusOptsAFK = False
                 }
 
-eventHandler :: Text -> Text -> D.DiscordHandle -> D.Event -> IO ()
-eventHandler dictKey urbanKey dis event = do
+eventHandler :: Text -> Text -> Text -> D.DiscordHandle -> D.Event -> IO ()
+eventHandler dictKey urbanKey commandPrefix dis event = do
     let config =
             Config
                 { configDiscordHandle = dis
                 , configDictKey = dictKey
                 , configUrbanKey = urbanKey
+                , configCommandPrefix = commandPrefix
                 }
     flip runReaderT config $ case event of
         D.MessageCreate message -> messageCreate message
@@ -137,8 +145,8 @@ russianRoulette message = do
             response = "Bang!"
         _ -> createMessage (D.messageChannel message) "Click."
 
-isRussianRoulette :: Applicative f => CommandPredicate f
-isRussianRoulette = messageStartsWith "!rr"
+isRussianRoulette :: MonadReader Config m => CommandPredicate m
+isRussianRoulette = isCommand "rr"
 
 data Definition = Definition
     { defPartOfSpeech :: Maybe Text
@@ -164,8 +172,8 @@ define message = do
             createMessage (D.messageChannel message) $
                 "No definition found for **" <> T.pack phrase <> "**"
 
-isDefine :: Applicative f => CommandPredicate f
-isDefine = messageStartsWith "!define "
+isDefine :: MonadReader Config m => CommandPredicate m
+isDefine = isCommand "define "
 
 buildDefineOutput :: String -> Definition -> Text
 buildDefineOutput word definition = do
@@ -295,12 +303,13 @@ respond message
         responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
         createMessage (D.messageChannel message) $ responses !! responseNum
 
-messageStartsWith :: Applicative f => Text -> CommandPredicate f
-messageStartsWith text =
-    pure
-        . (text `T.isPrefixOf`)
-        . T.toLower
-        . D.messageText
+isCommand :: MonadReader Config m => Text -> CommandPredicate m
+isCommand command message = do
+    prefix <- asks configCommandPrefix
+    pure $ messageStartsWith (prefix <> command) message
+
+messageStartsWith :: Text -> D.Message -> Bool
+messageStartsWith text = (text `T.isPrefixOf`) . T.toLower . D.messageText
 
 simpleReply :: (MonadIO m, MonadReader Config m) => Text -> Command m
 simpleReply replyText message =
