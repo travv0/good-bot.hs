@@ -1,27 +1,33 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Lib (bigbot) where
 
-import Control.Applicative (Alternative (empty))
 import Control.Lens ((&), (.~), (^.))
 import Control.Monad (filterM, when)
-import Control.Monad.Reader (MonadIO (..), MonadReader, ReaderT (runReaderT), asks, forM_)
-import Data.Aeson (FromJSON (parseJSON), Value (Object), eitherDecode, (.:))
+import Control.Monad.Reader (ReaderT (runReaderT), asks, forM_, liftIO)
+import Data.Aeson (FromJSON (parseJSON), defaultOptions, eitherDecode, fieldLabelModifier, genericParseJSON, withObject, (.:))
 import qualified Data.ByteString.Lazy as BSL
+import Data.Char (toLower)
+import Data.List (stripPrefix)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.IO as T
+import Data.Yaml (decodeFileEither)
 import qualified Discord as D
 import qualified Discord.Internal.Rest as D
 import qualified Discord.Requests as D
+import GHC.Generics (Generic)
 import Network.Wreq (Response, defaults, get, getWith, header, param, responseBody)
 import qualified Network.Wreq as W
-import System.Environment (getEnv, lookupEnv)
 import System.Random (Random (randomIO))
+
+type App a = ReaderT Config IO a
 
 data Config = Config
     { configDiscordHandle :: D.DiscordHandle
@@ -30,29 +36,44 @@ data Config = Config
     , configCommandPrefix :: Text
     }
 
+data UserConfig = UserConfig
+    { userConfigDiscordToken :: Text
+    , userConfigDictKey :: Text
+    , userConfigUrbanKey :: Text
+    , userConfigActivity :: Maybe Text
+    , userConfigCommandPrefix :: Maybe Text
+    }
+    deriving (Generic, Show)
+
+instance FromJSON UserConfig where
+    parseJSON =
+        genericParseJSON
+            defaultOptions
+                { fieldLabelModifier = stripUserConfigPrefix
+                }
+
+stripUserConfigPrefix :: String -> String
+stripUserConfigPrefix s =
+    case stripPrefix "userConfig" s of
+        Just (c : rest) -> toLower c : rest
+        _ -> s
+
 bigbot :: IO ()
 bigbot = do
-    token <- T.pack <$> getEnv "BIGBOT_TOKEN"
-    dictKey <- T.pack <$> getEnv "BIGBOT_DICT_KEY"
-    urbanKey <- T.pack <$> getEnv "BIGBOT_URBAN_KEY"
-    activityName <- fmap T.pack <$> lookupEnv "BIGBOT_ACTIVITY"
-    commandPrefix <- fmap T.pack <$> lookupEnv "BIGBOT_PREFIX"
+    config@UserConfig{..} <-
+        either (error . show) id <$> decodeFileEither "config.yaml"
     userFacingError <-
         D.runDiscord $
             D.def
-                { D.discordToken = token
-                , D.discordOnStart = onStart activityName
-                , D.discordOnEvent =
-                    eventHandler
-                        dictKey
-                        urbanKey
-                        (fromMaybe "!" commandPrefix)
+                { D.discordToken = userConfigDiscordToken
+                , D.discordOnStart = onStart config
+                , D.discordOnEvent = eventHandler config
                 , D.discordOnLog = T.putStrLn
                 }
     T.putStrLn userFacingError
 
-onStart :: Maybe Text -> D.DiscordHandle -> IO ()
-onStart mactivity dis =
+onStart :: UserConfig -> D.DiscordHandle -> IO ()
+onStart config@UserConfig{userConfigActivity = mactivity} dis = do
     D.sendCommand dis $
         D.UpdateStatus $
             D.UpdateStatusOpts
@@ -63,32 +84,33 @@ onStart mactivity dis =
                 , D.updateStatusOptsNewStatus = D.UpdateStatusOnline
                 , D.updateStatusOptsAFK = False
                 }
+    T.putStrLn $ "bot started with config " <> T.pack (show config)
 
-eventHandler :: Text -> Text -> Text -> D.DiscordHandle -> D.Event -> IO ()
-eventHandler dictKey urbanKey commandPrefix dis event = do
+eventHandler :: UserConfig -> D.DiscordHandle -> D.Event -> IO ()
+eventHandler UserConfig{..} dis event = do
     let config =
             Config
                 { configDiscordHandle = dis
-                , configDictKey = dictKey
-                , configUrbanKey = urbanKey
-                , configCommandPrefix = commandPrefix
+                , configDictKey = userConfigDictKey
+                , configUrbanKey = userConfigUrbanKey
+                , configCommandPrefix = fromMaybe "!" userConfigCommandPrefix
                 }
     flip runReaderT config $ case event of
         D.MessageCreate message -> messageCreate message
         D.TypingStart typingInfo -> typingStart typingInfo
         _ -> pure ()
 
-type Command m = D.Message -> m ()
-type CommandPredicate m = D.Message -> m Bool
+type Command = D.Message -> App ()
+type CommandPredicate = D.Message -> App Bool
 
-commands :: (MonadIO m, MonadReader Config m) => [(CommandPredicate m, Command m)]
+commands :: [(CommandPredicate, Command)]
 commands =
     [ (isCommand "rr", russianRoulette)
     , (isCommand "define", define)
     , (mentionsMe, respond)
     ]
 
-messageCreate :: (MonadIO m, MonadReader Config m) => D.Message -> m ()
+messageCreate :: D.Message -> App ()
 messageCreate message
     | not (fromBot message) = do
         matches <- filterM (\(p, _) -> p message) commands
@@ -99,13 +121,13 @@ messageCreate message
         simpleReply "Carl is a cuck" message
     | otherwise = pure ()
 
-typingStart :: (MonadIO m, MonadReader Config m) => D.TypingInfo -> m ()
+typingStart :: D.TypingInfo -> App ()
 typingStart (D.TypingInfo userId channelId _utcTime) = do
     shouldReply <- liftIO $ (== 0) . (`mod` 1000) <$> (randomIO :: IO Int)
     when shouldReply $
         createMessage channelId $ T.pack $ "shut up <@" <> show userId <> ">"
 
-restCall :: (MonadReader Config m, MonadIO m, FromJSON a, D.Request (r a)) => r a -> m ()
+restCall :: (FromJSON a, D.Request (r a)) => r a -> App ()
 restCall request = do
     dis <- asks configDiscordHandle
     r <- liftIO $ D.restCall dis request
@@ -113,17 +135,12 @@ restCall request = do
         Right _ -> pure ()
         Left err -> liftIO $ print err
 
-createMessage :: (MonadReader Config m, MonadIO m) => D.ChannelId -> Text -> m ()
+createMessage :: D.ChannelId -> Text -> App ()
 createMessage channelId message = do
     let chunks = T.chunksOf 2000 message
     forM_ chunks $ \chunk -> restCall $ D.CreateMessage channelId chunk
 
-createGuildBan ::
-    (MonadReader Config m, MonadIO m) =>
-    D.GuildId ->
-    D.UserId ->
-    Text ->
-    m ()
+createGuildBan :: D.GuildId -> D.UserId -> Text -> App ()
 createGuildBan guildId userId banMessage =
     restCall $
         D.CreateGuildBan
@@ -134,7 +151,7 @@ createGuildBan guildId userId banMessage =
 fromBot :: D.Message -> Bool
 fromBot m = D.userIsBot (D.messageAuthor m)
 
-russianRoulette :: (MonadIO m, MonadReader Config m) => Command m
+russianRoulette :: Command
 russianRoulette message = do
     chamber <- liftIO $ (`mod` 6) <$> (randomIO :: IO Int)
     case (chamber, D.messageGuild message) of
@@ -152,13 +169,12 @@ data Definition = Definition
     deriving (Show)
 
 instance FromJSON Definition where
-    parseJSON (Object v) = do
+    parseJSON = withObject "Definition" $ \v -> do
         partOfSpeech <- v .: "fl"
         definitions <- v .: "shortdef"
         pure Definition{defPartOfSpeech = partOfSpeech, defDefinitions = definitions}
-    parseJSON _ = empty
 
-define :: (MonadIO m, MonadReader Config m) => Command m
+define :: Command
 define message = do
     let (_ : wordsToDefine) = words $ T.unpack $ D.messageText message
     case wordsToDefine of
@@ -194,7 +210,7 @@ buildDefineOutput word definition = do
                 <> definitions
      in formattedOutput
 
-getDefineOutput :: (MonadIO m, MonadReader Config m) => String -> m (Maybe Text)
+getDefineOutput :: String -> App (Maybe Text)
 getDefineOutput word = do
     response <- getDictionaryResponse word
     buildDefineOutputHandleFail word (eitherDecode (response ^. responseBody)) $
@@ -202,7 +218,7 @@ getDefineOutput word = do
             urbanResponse <- getUrbanResponse word
             buildDefineOutputHandleFail word (decodeUrban (urbanResponse ^. responseBody)) Nothing
 
-buildDefineOutputHandleFail :: MonadIO m => String -> Either String [Definition] -> Maybe (m (Maybe Text)) -> m (Maybe Text)
+buildDefineOutputHandleFail :: String -> Either String [Definition] -> Maybe (App (Maybe Text)) -> App (Maybe Text)
 buildDefineOutputHandleFail word (Right defs) _
     | not (null defs) =
         pure $
@@ -214,7 +230,7 @@ buildDefineOutputHandleFail _ (Left _) (Just fallback) = fallback
 buildDefineOutputHandleFail _ _ (Just fallback) = fallback
 buildDefineOutputHandleFail _ (Right _) Nothing = pure Nothing
 
-getDictionaryResponse :: (MonadIO m, MonadReader Config m) => String -> m (Response BSL.ByteString)
+getDictionaryResponse :: String -> App (Response BSL.ByteString)
 getDictionaryResponse word = do
     apiKey <- asks configDictKey
     liftIO $
@@ -225,7 +241,7 @@ getDictionaryResponse word = do
                     <> "?key="
                     <> apiKey
 
-getUrbanResponse :: (MonadIO m, MonadReader Config m) => String -> m (Response BSL.ByteString)
+getUrbanResponse :: String -> App (Response BSL.ByteString)
 getUrbanResponse word = do
     apiKey <- asks configUrbanKey
     liftIO $
@@ -245,11 +261,10 @@ newtype UrbanDefinition = UrbanDefinition {urbanDefDefinition :: [Text]}
     deriving (Show)
 
 instance FromJSON UrbanDefinition where
-    parseJSON (Object v) = do
+    parseJSON = withObject "UrbanDefinition" $ \v -> do
         list <- v .: "list"
         defs <- traverse (.: "definition") list
         pure UrbanDefinition{urbanDefDefinition = defs}
-    parseJSON _ = empty
 
 decodeUrban :: BSL.ByteString -> Either String [Definition]
 decodeUrban = fmap urbanToDictionary . eitherDecode
@@ -258,13 +273,13 @@ urbanToDictionary :: UrbanDefinition -> [Definition]
 urbanToDictionary (UrbanDefinition def) =
     [Definition Nothing def | not (null def)]
 
-mentionsMe :: (MonadReader Config m, MonadIO m) => D.Message -> m Bool
+mentionsMe :: D.Message -> App Bool
 mentionsMe message = do
     dis <- asks configDiscordHandle
     cache <- liftIO $ D.readCache dis
     pure $ D.userId (D._currentUser cache) `elem` map D.userId (D.messageMentions message)
 
-respond :: (MonadIO m, MonadReader Config m) => Command m
+respond :: Command
 respond message
     | "thanks" `T.isInfixOf` T.toLower (D.messageText message)
         || "thank you" `T.isInfixOf` T.toLower (D.messageText message)
@@ -300,7 +315,7 @@ respond message
         responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
         createMessage (D.messageChannel message) $ responses !! responseNum
 
-isCommand :: MonadReader Config m => Text -> CommandPredicate m
+isCommand :: Text -> CommandPredicate
 isCommand command message = do
     prefix <- asks configCommandPrefix
     pure $ messageStartsWith (prefix <> command) message
@@ -308,7 +323,7 @@ isCommand command message = do
 messageStartsWith :: Text -> D.Message -> Bool
 messageStartsWith text = (text `T.isPrefixOf`) . T.toLower . D.messageText
 
-simpleReply :: (MonadIO m, MonadReader Config m) => Text -> Command m
+simpleReply :: Text -> Command
 simpleReply replyText message =
     createMessage
         (D.messageChannel message)

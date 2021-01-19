@@ -31,6 +31,7 @@ dependencies:
 - split
 - text
 - wreq
+- yaml
 
 library:
   source-dirs: src
