@@ -6,12 +6,21 @@
 
 module Lib (bigbot) where
 
-import Control.Lens ((&), (.~), (^.))
+import Control.Lens (view, (&), (.~))
 import Control.Monad (filterM, when)
 import Control.Monad.Reader (ReaderT (runReaderT), asks, forM_, liftIO)
-import Data.Aeson (FromJSON (parseJSON), defaultOptions, eitherDecode, fieldLabelModifier, genericParseJSON, withObject, (.:))
+import Data.Aeson (
+    FromJSON (parseJSON),
+    defaultOptions,
+    eitherDecode,
+    fieldLabelModifier,
+    genericParseJSON,
+    withObject,
+    (.:),
+ )
 import qualified Data.ByteString.Lazy as BSL
 import Data.Char (toLower)
+import Data.Either.Combinators (maybeToRight)
 import Data.List (stripPrefix)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -23,7 +32,15 @@ import qualified Discord as D
 import qualified Discord.Internal.Rest as D
 import qualified Discord.Requests as D
 import GHC.Generics (Generic)
-import Network.Wreq (Response, defaults, get, getWith, header, param, responseBody)
+import Network.Wreq (
+    Response,
+    defaults,
+    get,
+    getWith,
+    header,
+    param,
+    responseBody,
+ )
 import qualified Network.Wreq as W
 import System.Environment (getArgs)
 import System.Random (Random (randomIO))
@@ -32,15 +49,15 @@ type App a = ReaderT Config IO a
 
 data Config = Config
     { configDiscordHandle :: D.DiscordHandle
-    , configDictKey :: Text
-    , configUrbanKey :: Text
+    , configDictKey :: Maybe Text
+    , configUrbanKey :: Maybe Text
     , configCommandPrefix :: Text
     }
 
 data UserConfig = UserConfig
     { userConfigDiscordToken :: Text
-    , userConfigDictKey :: Text
-    , userConfigUrbanKey :: Text
+    , userConfigDictKey :: Maybe Text
+    , userConfigUrbanKey :: Maybe Text
     , userConfigActivity :: Maybe Text
     , userConfigCommandPrefix :: Maybe Text
     }
@@ -50,12 +67,12 @@ instance FromJSON UserConfig where
     parseJSON =
         genericParseJSON
             defaultOptions
-                { fieldLabelModifier = stripUserConfigPrefix
+                { fieldLabelModifier = stripJSONPrefix "userConfig"
                 }
 
-stripUserConfigPrefix :: String -> String
-stripUserConfigPrefix s =
-    case stripPrefix "userConfig" s of
+stripJSONPrefix :: String -> String -> String
+stripJSONPrefix prefix s =
+    case stripPrefix prefix s of
         Just (c : rest) -> toLower c : rest
         _ -> s
 
@@ -85,7 +102,8 @@ onStart config@UserConfig{userConfigActivity = mactivity} dis = do
             D.UpdateStatusOpts
                 { D.updateStatusOptsSince = Nothing
                 , D.updateStatusOptsGame = case mactivity of
-                    Just activity -> Just $ D.Activity activity D.ActivityTypeGame Nothing
+                    Just activity ->
+                        Just $ D.Activity activity D.ActivityTypeGame Nothing
                     Nothing -> Nothing
                 , D.updateStatusOptsNewStatus = D.UpdateStatusOnline
                 , D.updateStatusOptsAFK = False
@@ -178,13 +196,20 @@ instance FromJSON Definition where
     parseJSON = withObject "Definition" $ \v -> do
         partOfSpeech <- v .: "fl"
         definitions <- v .: "shortdef"
-        pure Definition{defPartOfSpeech = partOfSpeech, defDefinitions = definitions}
+        pure
+            Definition
+                { defPartOfSpeech = partOfSpeech
+                , defDefinitions = definitions
+                }
 
 define :: Command
 define message = do
     let (_ : wordsToDefine) = words $ T.unpack $ D.messageText message
     case wordsToDefine of
-        [] -> createMessage (D.messageChannel message) "Missing word/phrase to define"
+        [] ->
+            createMessage
+                (D.messageChannel message)
+                "Missing word/phrase to define"
         wtd -> do
             let phrase = unwords wtd
             moutput <- getDefineOutput phrase
@@ -219,41 +244,66 @@ buildDefineOutput word definition = do
 getDefineOutput :: String -> App (Maybe Text)
 getDefineOutput word = do
     response <- getDictionaryResponse word
-    buildDefineOutputHandleFail word (eitherDecode (response ^. responseBody)) $
-        Just $ do
+    buildDefineOutputHandleFail
+        word
+        ( maybeToRight
+            "no dictionary.com api key set"
+            (fmap (view responseBody) response)
+            >>= eitherDecode
+        )
+        $ Just $ do
             urbanResponse <- getUrbanResponse word
-            buildDefineOutputHandleFail word (decodeUrban (urbanResponse ^. responseBody)) Nothing
+            buildDefineOutputHandleFail
+                word
+                ( maybeToRight
+                    "no urban dictionary api key set"
+                    (fmap (view responseBody) urbanResponse)
+                    >>= decodeUrban
+                )
+                Nothing
 
-buildDefineOutputHandleFail :: String -> Either String [Definition] -> Maybe (App (Maybe Text)) -> App (Maybe Text)
+buildDefineOutputHandleFail ::
+    String ->
+    Either String [Definition] ->
+    Maybe (App (Maybe Text)) ->
+    App (Maybe Text)
 buildDefineOutputHandleFail word (Right defs) _
     | not (null defs) =
         pure $
             Just $
                 T.intercalate "\n\n" $
                     map (buildDefineOutput word) defs
-buildDefineOutputHandleFail _ (Left err) Nothing = liftIO (print err) >> pure Nothing
+buildDefineOutputHandleFail _ (Left err) Nothing =
+    liftIO (print err) >> pure Nothing
 buildDefineOutputHandleFail _ (Left _) (Just fallback) = fallback
 buildDefineOutputHandleFail _ _ (Just fallback) = fallback
 buildDefineOutputHandleFail _ (Right _) Nothing = pure Nothing
 
-getDictionaryResponse :: String -> App (Response BSL.ByteString)
+getDictionaryResponse :: String -> App (Maybe (Response BSL.ByteString))
 getDictionaryResponse word = do
-    apiKey <- asks configDictKey
-    liftIO $
-        get $
-            T.unpack $
-                "https://dictionaryapi.com/api/v3/references/collegiate/json/"
-                    <> T.pack word
-                    <> "?key="
-                    <> apiKey
+    mapiKey <- asks configDictKey
+    case mapiKey of
+        Nothing -> pure Nothing
+        Just apiKey ->
+            liftIO $
+                fmap Just <$> get $
+                    T.unpack $
+                        "https://dictionaryapi.com/api/v3/references/collegiate/json/"
+                            <> T.pack word
+                            <> "?key="
+                            <> apiKey
 
-getUrbanResponse :: String -> App (Response BSL.ByteString)
+getUrbanResponse :: String -> App (Maybe (Response BSL.ByteString))
 getUrbanResponse word = do
-    apiKey <- asks configUrbanKey
-    liftIO $
-        getWith
-            (urbanOpts apiKey word)
-            "https://mashape-community-urban-dictionary.p.rapidapi.com/define"
+    mapiKey <- asks configUrbanKey
+    case mapiKey of
+        Nothing -> pure Nothing
+        Just apiKey ->
+            liftIO $
+                Just
+                    <$> getWith
+                        (urbanOpts apiKey word)
+                        "https://mashape-community-urban-dictionary.p.rapidapi.com/define"
 
 urbanOpts :: Text -> String -> W.Options
 urbanOpts apiKey term =
@@ -283,7 +333,9 @@ mentionsMe :: D.Message -> App Bool
 mentionsMe message = do
     dis <- asks configDiscordHandle
     cache <- liftIO $ D.readCache dis
-    pure $ D.userId (D._currentUser cache) `elem` map D.userId (D.messageMentions message)
+    pure $
+        D.userId (D._currentUser cache)
+            `elem` map D.userId (D.messageMentions message)
 
 respond :: Command
 respond message
