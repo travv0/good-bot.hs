@@ -25,6 +25,7 @@ import qualified Discord.Requests as D
 import GHC.Generics (Generic)
 import Network.Wreq (Response, defaults, get, getWith, header, param, responseBody)
 import qualified Network.Wreq as W
+import System.Environment (getArgs)
 import System.Random (Random (randomIO))
 
 type App a = ReaderT Config IO a
@@ -60,8 +61,13 @@ stripUserConfigPrefix s =
 
 bigbot :: IO ()
 bigbot = do
+    args <- getArgs
+    let configFile = case args of
+            [] -> "config.yaml"
+            [path] -> path
+            _ -> error "too many arguments provided: expected at most 1"
     config@UserConfig{..} <-
-        either (error . show) id <$> decodeFileEither "config.yaml"
+        either (error . show) id <$> decodeFileEither configFile
     userFacingError <-
         D.runDiscord $
             D.def
