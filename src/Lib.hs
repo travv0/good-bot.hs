@@ -37,6 +37,7 @@ import GHC.Generics (Generic)
 import Network.Wreq (
     Response,
     defaults,
+    get,
     getWith,
     header,
     param,
@@ -115,6 +116,11 @@ bigbot = do
 
 onStart :: UserConfig -> D.DiscordHandle -> IO ()
 onStart config@UserConfig{userConfigActivity = mactivity} dis = do
+    updateStatus dis mactivity
+    T.putStrLn $ "bot started with config " <> T.pack (show config)
+
+updateStatus :: D.DiscordHandle -> Maybe Text -> IO ()
+updateStatus dis mactivity =
     D.sendCommand dis $
         D.UpdateStatus $
             D.UpdateStatusOpts
@@ -126,7 +132,6 @@ onStart config@UserConfig{userConfigActivity = mactivity} dis = do
                 , D.updateStatusOptsNewStatus = D.UpdateStatusOnline
                 , D.updateStatusOptsAFK = False
                 }
-    T.putStrLn $ "bot started with config " <> T.pack (show config)
 
 eventHandler :: UserConfig -> IORef [Text] -> D.DiscordHandle -> D.Event -> IO ()
 eventHandler UserConfig{..} responses dis event = do
@@ -156,6 +161,7 @@ commands =
     , (isCommand "add", addResponse)
     , (isCommand "remove", removeResponse)
     , (isCommand "list", listResponses)
+    , (isCommand "playing", setPlaying)
     , (mentionsMe, respond)
     ]
 
@@ -311,7 +317,7 @@ getDictionaryResponse word = do
         Nothing -> pure Nothing
         Just apiKey ->
             liftIO $
-                fmap Just <$> W.get $
+                fmap Just <$> get $
                     T.unpack $
                         "https://dictionaryapi.com/api/v3/references/collegiate/json/"
                             <> T.pack word
@@ -463,3 +469,17 @@ listResponses message = do
     responsesRef <- asks configResponses
     responses <- liftIO $ intercalate "\n" <$> readIORef responsesRef
     createMessage (D.messageChannel message) responses
+
+setPlaying :: Command
+setPlaying message = do
+    dis <- asks configDiscordHandle
+    let (_ : postCommand) = words $ T.unpack $ D.messageText message
+    case postCommand of
+        [] -> do
+            liftIO $ updateStatus dis Nothing
+            createMessage (D.messageChannel message) "Removed status"
+        pc -> do
+            let status = T.pack $ unwords pc
+            liftIO $ updateStatus dis $ Just status
+            createMessage (D.messageChannel message) $
+                "Updated status to **" <> status <> "**"
