@@ -8,6 +8,7 @@ module Lib (bigbot) where
 
 import Control.Lens (view, (&), (.~))
 import Control.Monad (filterM, when)
+import Control.Monad.Catch (catchIOError)
 import Control.Monad.Reader (ReaderT (runReaderT), asks, forM_, liftIO)
 import Data.Aeson (
     FromJSON (parseJSON),
@@ -21,9 +22,10 @@ import Data.Aeson (
 import qualified Data.ByteString.Lazy as BSL
 import Data.Char (toLower)
 import Data.Either.Combinators (maybeToRight)
-import Data.List (stripPrefix)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.List (delete, nub, stripPrefix)
 import Data.Maybe (fromMaybe)
-import Data.Text (Text)
+import Data.Text (Text, intercalate)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.IO as T
@@ -35,7 +37,6 @@ import GHC.Generics (Generic)
 import Network.Wreq (
     Response,
     defaults,
-    get,
     getWith,
     header,
     param,
@@ -44,6 +45,7 @@ import Network.Wreq (
 import qualified Network.Wreq as W
 import System.Environment (getArgs)
 import System.Random (Random (randomIO))
+import Text.Read (readMaybe)
 
 type App a = ReaderT Config IO a
 
@@ -52,6 +54,7 @@ data Config = Config
     , configDictKey :: Maybe Text
     , configUrbanKey :: Maybe Text
     , configCommandPrefix :: Text
+    , configResponses :: IORef [Text]
     }
 
 data UserConfig = UserConfig
@@ -76,6 +79,9 @@ stripJSONPrefix prefix s =
         Just (c : rest) -> toLower c : rest
         _ -> s
 
+responsesFileName :: FilePath
+responsesFileName = "responses"
+
 bigbot :: IO ()
 bigbot = do
     args <- getArgs
@@ -85,12 +91,16 @@ bigbot = do
             _ -> error "too many arguments provided: expected at most 1"
     config@UserConfig{..} <-
         either (error . show) id <$> decodeFileEither configFile
+    fileResponses <-
+        (Just <$> readFile responsesFileName)
+            `catchIOError` \_ -> return Nothing
+    responses <- newIORef $ fromMaybe ["hi"] $ fileResponses >>= readMaybe
     userFacingError <-
         D.runDiscord $
             D.def
                 { D.discordToken = userConfigDiscordToken
                 , D.discordOnStart = onStart config
-                , D.discordOnEvent = eventHandler config
+                , D.discordOnEvent = eventHandler config responses
                 , D.discordOnLog = T.putStrLn
                 }
     T.putStrLn userFacingError
@@ -110,19 +120,21 @@ onStart config@UserConfig{userConfigActivity = mactivity} dis = do
                 }
     T.putStrLn $ "bot started with config " <> T.pack (show config)
 
-eventHandler :: UserConfig -> D.DiscordHandle -> D.Event -> IO ()
-eventHandler UserConfig{..} dis event = do
+eventHandler :: UserConfig -> IORef [Text] -> D.DiscordHandle -> D.Event -> IO ()
+eventHandler UserConfig{..} responses dis event = do
     let config =
             Config
                 { configDiscordHandle = dis
                 , configDictKey = userConfigDictKey
                 , configUrbanKey = userConfigUrbanKey
                 , configCommandPrefix = fromMaybe "!" userConfigCommandPrefix
+                , configResponses = responses
                 }
-    flip runReaderT config $ case event of
-        D.MessageCreate message -> messageCreate message
-        D.TypingStart typingInfo -> typingStart typingInfo
-        _ -> pure ()
+    flip runReaderT config $
+        case event of
+            D.MessageCreate message -> messageCreate message
+            D.TypingStart typingInfo -> typingStart typingInfo
+            _ -> pure ()
 
 type Command = D.Message -> App ()
 type CommandPredicate = D.Message -> App Bool
@@ -131,6 +143,9 @@ commands :: [(CommandPredicate, Command)]
 commands =
     [ (isCommand "rr", russianRoulette)
     , (isCommand "define", define)
+    , (isCommand "add", addResponse)
+    , (isCommand "remove", removeResponse)
+    , (isCommand "list", listResponses)
     , (mentionsMe, respond)
     ]
 
@@ -286,7 +301,7 @@ getDictionaryResponse word = do
         Nothing -> pure Nothing
         Just apiKey ->
             liftIO $
-                fmap Just <$> get $
+                fmap Just <$> W.get $
                     T.unpack $
                         "https://dictionaryapi.com/api/v3/references/collegiate/json/"
                             <> T.pack word
@@ -369,7 +384,8 @@ respond message
            ) =
         createMessage (D.messageChannel message) "i am fine thank u and u?"
     | otherwise = do
-        let responses = ["what u want", "stfu", "u r ugly", "i love u"]
+        responsesRef <- asks configResponses
+        responses <- liftIO $ readIORef responsesRef
         responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
         createMessage (D.messageChannel message) $ responses !! responseNum
 
@@ -386,3 +402,46 @@ simpleReply replyText message =
     createMessage
         (D.messageChannel message)
         replyText
+
+addResponse :: Command
+addResponse message = do
+    let (_ : postCommand) = words $ T.unpack $ D.messageText message
+    case postCommand of
+        [] -> createMessage (D.messageChannel message) "Missing response to add"
+        pc -> do
+            let response = unwords pc
+            responsesRef <- asks configResponses
+            liftIO $
+                atomicModifyIORef'
+                    responsesRef
+                    (\rs -> (nub $ T.pack response : rs, ()))
+            responses <- liftIO $ readIORef responsesRef
+            liftIO $ writeFile responsesFileName $ show responses
+            createMessage (D.messageChannel message) $
+                "Added **" <> T.pack response <> "** to responses"
+
+removeResponse :: Command
+removeResponse message = do
+    let (_ : postCommand) = words $ T.unpack $ D.messageText message
+    case postCommand of
+        [] ->
+            createMessage
+                (D.messageChannel message)
+                "Missing response to remove"
+        pc -> do
+            let response = unwords pc
+            responsesRef <- asks configResponses
+            liftIO $
+                atomicModifyIORef'
+                    responsesRef
+                    (\rs -> (delete (T.pack response) rs, ()))
+            responses <- liftIO $ readIORef responsesRef
+            liftIO $ writeFile responsesFileName $ show responses
+            createMessage (D.messageChannel message) $
+                "Removed **" <> T.pack response <> "** from responses"
+
+listResponses :: Command
+listResponses message = do
+    responsesRef <- asks configResponses
+    responses <- liftIO $ intercalate "\n" <$> readIORef responsesRef
+    createMessage (D.messageChannel message) responses
