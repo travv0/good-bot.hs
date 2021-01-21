@@ -409,16 +409,16 @@ addResponse message = do
     case postCommand of
         [] -> createMessage (D.messageChannel message) "Missing response to add"
         pc -> do
-            let response = unwords pc
+            let response = T.pack $ unwords pc
             responsesRef <- asks configResponses
             liftIO $
                 atomicModifyIORef'
                     responsesRef
-                    (\rs -> (nub $ T.pack response : rs, ()))
+                    (\rs -> (nub $ response : rs, ()))
             responses <- liftIO $ readIORef responsesRef
             liftIO $ writeFile responsesFileName $ show responses
             createMessage (D.messageChannel message) $
-                "Added **" <> T.pack response <> "** to responses"
+                "Added **" <> response <> "** to responses"
 
 removeResponse :: Command
 removeResponse message = do
@@ -429,16 +429,22 @@ removeResponse message = do
                 (D.messageChannel message)
                 "Missing response to remove"
         pc -> do
-            let response = unwords pc
+            let response = T.pack $ unwords pc
             responsesRef <- asks configResponses
-            liftIO $
-                atomicModifyIORef'
-                    responsesRef
-                    (\rs -> (delete (T.pack response) rs, ()))
-            responses <- liftIO $ readIORef responsesRef
-            liftIO $ writeFile responsesFileName $ show responses
-            createMessage (D.messageChannel message) $
-                "Removed **" <> T.pack response <> "** from responses"
+            oldResponses <- liftIO $ readIORef responsesRef
+            if response `elem` oldResponses
+                then do
+                    liftIO $
+                        atomicModifyIORef'
+                            responsesRef
+                            (\rs -> (delete response rs, ()))
+                    responses <- liftIO $ readIORef responsesRef
+                    liftIO $ writeFile responsesFileName $ show responses
+                    createMessage (D.messageChannel message) $
+                        "Removed **" <> response <> "** from responses"
+                else
+                    createMessage (D.messageChannel message) $
+                        "Response **" <> response <> "** not found"
 
 listResponses :: Command
 listResponses message = do
