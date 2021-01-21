@@ -55,6 +55,7 @@ data Config = Config
     , configUrbanKey :: Maybe Text
     , configCommandPrefix :: Text
     , configResponses :: IORef [Text]
+    , configResponsesFile :: FilePath
     }
 
 data UserConfig = UserConfig
@@ -63,6 +64,7 @@ data UserConfig = UserConfig
     , userConfigUrbanKey :: Maybe Text
     , userConfigActivity :: Maybe Text
     , userConfigCommandPrefix :: Maybe Text
+    , userConfigResponsesFile :: Maybe FilePath
     }
     deriving (Generic, Show)
 
@@ -79,20 +81,26 @@ stripJSONPrefix prefix s =
         Just (c : rest) -> toLower c : rest
         _ -> s
 
-responsesFileName :: FilePath
-responsesFileName = "responses"
+defaultConfigFile :: FilePath
+defaultConfigFile = "config.yaml"
+
+defaultResponsesFile :: FilePath
+defaultResponsesFile = "responses"
 
 bigbot :: IO ()
 bigbot = do
     args <- getArgs
     let configFile = case args of
-            [] -> "config.yaml"
+            [] -> defaultConfigFile
             [path] -> path
             _ -> error "too many arguments provided: expected at most 1"
     config@UserConfig{..} <-
         either (error . show) id <$> decodeFileEither configFile
     fileResponses <-
-        (Just <$> readFile responsesFileName)
+        ( Just
+                <$> readFile
+                    (fromMaybe defaultResponsesFile userConfigResponsesFile)
+            )
             `catchIOError` \_ -> return Nothing
     responses <- newIORef $ fromMaybe ["hi"] $ fileResponses >>= readMaybe
     userFacingError <-
@@ -129,6 +137,8 @@ eventHandler UserConfig{..} responses dis event = do
                 , configUrbanKey = userConfigUrbanKey
                 , configCommandPrefix = fromMaybe "!" userConfigCommandPrefix
                 , configResponses = responses
+                , configResponsesFile =
+                    fromMaybe defaultResponsesFile userConfigResponsesFile
                 }
     flip runReaderT config $
         case event of
@@ -411,6 +421,7 @@ addResponse message = do
         pc -> do
             let response = T.pack $ unwords pc
             responsesRef <- asks configResponses
+            responsesFileName <- asks configResponsesFile
             liftIO $
                 atomicModifyIORef'
                     responsesRef
@@ -431,6 +442,7 @@ removeResponse message = do
         pc -> do
             let response = T.pack $ unwords pc
             responsesRef <- asks configResponses
+            responsesFileName <- asks configResponsesFile
             oldResponses <- liftIO $ readIORef responsesRef
             if response `elem` oldResponses
                 then do

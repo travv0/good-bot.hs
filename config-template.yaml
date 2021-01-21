@@ -3,3 +3,4 @@ dictKey: dictionaryapi.comApiKeyHere
 urbanKey: urbanDictionaryApiKeyHere
 activity: I'm playin a game
 commandPrefix: "!"
+responsesFile: responses
