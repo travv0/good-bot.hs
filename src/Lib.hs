@@ -8,7 +8,7 @@ module Lib (bigbot) where
 
 import Control.Lens (view, (&), (.~))
 import Control.Monad (filterM, when)
-import Control.Monad.Catch (catchIOError)
+import Control.Monad.Catch (catchAll, catchIOError)
 import Control.Monad.Reader (ReaderT (runReaderT), asks, forM_, liftIO)
 import Data.Aeson (
     FromJSON (parseJSON),
@@ -50,22 +50,30 @@ import Text.Read (readMaybe)
 
 type App a = ReaderT Config IO a
 
+data Db = Db
+    { dbResponses :: [Text]
+    , dbActivity :: Maybe Text
+    }
+    deriving (Show, Read)
+
+defaultDb :: Db
+defaultDb = Db{dbResponses = ["hi"], dbActivity = Nothing}
+
 data Config = Config
     { configDiscordHandle :: D.DiscordHandle
     , configDictKey :: Maybe Text
     , configUrbanKey :: Maybe Text
     , configCommandPrefix :: Text
-    , configResponses :: IORef [Text]
-    , configResponsesFile :: FilePath
+    , configDb :: IORef Db
+    , configDbFile :: FilePath
     }
 
 data UserConfig = UserConfig
     { userConfigDiscordToken :: Text
     , userConfigDictKey :: Maybe Text
     , userConfigUrbanKey :: Maybe Text
-    , userConfigActivity :: Maybe Text
     , userConfigCommandPrefix :: Maybe Text
-    , userConfigResponsesFile :: Maybe FilePath
+    , userConfigDbFile :: Maybe FilePath
     }
     deriving (Generic, Show)
 
@@ -85,8 +93,8 @@ stripJSONPrefix prefix s =
 defaultConfigFile :: FilePath
 defaultConfigFile = "config.yaml"
 
-defaultResponsesFile :: FilePath
-defaultResponsesFile = "responses"
+defaultDbFile :: FilePath
+defaultDbFile = "db"
 
 bigbot :: IO ()
 bigbot = do
@@ -97,25 +105,29 @@ bigbot = do
             _ -> error "too many arguments provided: expected at most 1"
     config@UserConfig{..} <-
         either (error . show) id <$> decodeFileEither configFile
-    fileResponses <-
+    dbStr <-
         ( Just
                 <$> readFile
-                    (fromMaybe defaultResponsesFile userConfigResponsesFile)
+                    (fromMaybe defaultDbFile userConfigDbFile)
             )
             `catchIOError` \_ -> return Nothing
-    responses <- newIORef $ fromMaybe ["hi"] $ fileResponses >>= readMaybe
+    let mdb = dbStr >>= readMaybe
+    let db = fromMaybe defaultDb mdb
+    dbRef <- newIORef db
     userFacingError <-
-        D.runDiscord $
-            D.def
+        D.runDiscord
+            ( D.def
                 { D.discordToken = userConfigDiscordToken
-                , D.discordOnStart = onStart config
-                , D.discordOnEvent = eventHandler config responses
+                , D.discordOnStart = onStart db config
+                , D.discordOnEvent = eventHandler config dbRef
                 , D.discordOnLog = T.putStrLn
                 }
+            )
+            `catchAll` \e -> return $ T.pack $ show e
     T.putStrLn userFacingError
 
-onStart :: UserConfig -> D.DiscordHandle -> IO ()
-onStart config@UserConfig{userConfigActivity = mactivity} dis = do
+onStart :: Db -> UserConfig -> D.DiscordHandle -> IO ()
+onStart Db{dbActivity = mactivity} config dis = do
     updateStatus dis mactivity
     T.putStrLn $ "bot started with config " <> T.pack (show config)
 
@@ -133,17 +145,17 @@ updateStatus dis mactivity =
                 , D.updateStatusOptsAFK = False
                 }
 
-eventHandler :: UserConfig -> IORef [Text] -> D.DiscordHandle -> D.Event -> IO ()
-eventHandler UserConfig{..} responses dis event = do
+eventHandler :: UserConfig -> IORef Db -> D.DiscordHandle -> D.Event -> IO ()
+eventHandler UserConfig{..} db dis event = do
     let config =
             Config
                 { configDiscordHandle = dis
                 , configDictKey = userConfigDictKey
                 , configUrbanKey = userConfigUrbanKey
                 , configCommandPrefix = fromMaybe "!" userConfigCommandPrefix
-                , configResponses = responses
-                , configResponsesFile =
-                    fromMaybe defaultResponsesFile userConfigResponsesFile
+                , configDb = db
+                , configDbFile =
+                    fromMaybe defaultDbFile userConfigDbFile
                 }
     flip runReaderT config $
         case event of
@@ -400,8 +412,8 @@ respond message
            ) =
         createMessage (D.messageChannel message) "i am fine thank u and u?"
     | otherwise = do
-        responsesRef <- asks configResponses
-        responses <- liftIO $ readIORef responsesRef
+        db <- asks configDb
+        responses <- liftIO $ dbResponses <$> readIORef db
         responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
         createMessage (D.messageChannel message) $ responses !! responseNum
 
@@ -426,14 +438,16 @@ addResponse message = do
         [] -> createMessage (D.messageChannel message) "Missing response to add"
         pc -> do
             let response = T.pack $ unwords pc
-            responsesRef <- asks configResponses
-            responsesFileName <- asks configResponsesFile
+            dbRef <- asks configDb
+            dbFileName <- asks configDbFile
             liftIO $
                 atomicModifyIORef'
-                    responsesRef
-                    (\rs -> (nub $ response : rs, ()))
-            responses <- liftIO $ readIORef responsesRef
-            liftIO $ writeFile responsesFileName $ show responses
+                    dbRef
+                    ( \d ->
+                        (d{dbResponses = nub $ response : dbResponses d}, ())
+                    )
+            db <- liftIO $ readIORef dbRef
+            liftIO $ writeFile dbFileName $ show db
             createMessage (D.messageChannel message) $
                 "Added **" <> response <> "** to responses"
 
@@ -447,17 +461,24 @@ removeResponse message = do
                 "Missing response to remove"
         pc -> do
             let response = T.pack $ unwords pc
-            responsesRef <- asks configResponses
-            responsesFileName <- asks configResponsesFile
-            oldResponses <- liftIO $ readIORef responsesRef
+            dbRef <- asks configDb
+            dbFileName <- asks configDbFile
+            oldResponses <- liftIO $ dbResponses <$> readIORef dbRef
             if response `elem` oldResponses
                 then do
                     liftIO $
                         atomicModifyIORef'
-                            responsesRef
-                            (\rs -> (delete response rs, ()))
-                    responses <- liftIO $ readIORef responsesRef
-                    liftIO $ writeFile responsesFileName $ show responses
+                            dbRef
+                            ( \d ->
+                                ( d
+                                    { dbResponses =
+                                        delete response $ dbResponses d
+                                    }
+                                , ()
+                                )
+                            )
+                    db <- liftIO $ readIORef dbRef
+                    liftIO $ writeFile dbFileName $ show db
                     createMessage (D.messageChannel message) $
                         "Removed **" <> response <> "** from responses"
                 else
@@ -466,20 +487,33 @@ removeResponse message = do
 
 listResponses :: Command
 listResponses message = do
-    responsesRef <- asks configResponses
-    responses <- liftIO $ intercalate "\n" <$> readIORef responsesRef
+    dbRef <- asks configDb
+    responses <- liftIO $ intercalate "\n" . dbResponses <$> readIORef dbRef
     createMessage (D.messageChannel message) responses
 
 setPlaying :: Command
 setPlaying message = do
     dis <- asks configDiscordHandle
+    dbRef <- asks configDb
+    dbFileName <- asks configDbFile
     let (_ : postCommand) = words $ T.unpack $ D.messageText message
     case postCommand of
         [] -> do
-            liftIO $ updateStatus dis Nothing
+            liftIO $ do
+                updateStatus dis Nothing
+                atomicModifyIORef'
+                    dbRef
+                    (\d -> (d{dbActivity = Nothing}, ()))
             createMessage (D.messageChannel message) "Removed status"
         pc -> do
             let status = T.pack $ unwords pc
-            liftIO $ updateStatus dis $ Just status
+            liftIO $ do
+                updateStatus dis $ Just status
+                atomicModifyIORef'
+                    dbRef
+                    (\d -> (d{dbActivity = Just status}, ()))
             createMessage (D.messageChannel message) $
                 "Updated status to **" <> status <> "**"
+    liftIO $ do
+        db <- readIORef dbRef
+        writeFile dbFileName $ show db

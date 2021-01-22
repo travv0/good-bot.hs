@@ -5,3 +5,4 @@ run.sh
 config.yaml
 responses
 test-*
+db
