@@ -9,7 +9,7 @@ module Lib (bigbot) where
 import Control.Lens (view, (&), (.~))
 import Control.Monad (filterM, when)
 import Control.Monad.Catch (catchAll, catchIOError)
-import Control.Monad.Reader (ReaderT (runReaderT), asks, forM_, liftIO)
+import Control.Monad.Reader (MonadTrans (lift), ReaderT (runReaderT), asks, forM_, liftIO)
 import Data.Aeson (
     FromJSON (parseJSON),
     defaultOptions,
@@ -48,7 +48,7 @@ import System.Environment (getArgs)
 import System.Random (Random (randomIO))
 import Text.Read (readMaybe)
 
-type App a = ReaderT Config IO a
+type App a = ReaderT Config D.DiscordHandler a
 
 data Db = Db
     { dbResponses :: [Text]
@@ -60,8 +60,7 @@ defaultDb :: Db
 defaultDb = Db{dbResponses = ["hi"], dbActivity = Nothing}
 
 data Config = Config
-    { configDiscordHandle :: D.DiscordHandle
-    , configDictKey :: Maybe Text
+    { configDictKey :: Maybe Text
     , configUrbanKey :: Maybe Text
     , configCommandPrefix :: Text
     , configDb :: IORef Db
@@ -126,14 +125,14 @@ bigbot = do
             `catchAll` \e -> return $ T.pack $ show e
     T.putStrLn userFacingError
 
-onStart :: Db -> UserConfig -> D.DiscordHandle -> IO ()
-onStart Db{dbActivity = mactivity} config dis = do
-    updateStatus dis mactivity
-    T.putStrLn $ "bot started with config " <> T.pack (show config)
+onStart :: Db -> UserConfig -> D.DiscordHandler ()
+onStart Db{dbActivity = mactivity} config = do
+    updateStatus mactivity
+    liftIO $ T.putStrLn $ "bot started with config " <> T.pack (show config)
 
-updateStatus :: D.DiscordHandle -> Maybe Text -> IO ()
-updateStatus dis mactivity =
-    D.sendCommand dis $
+updateStatus :: Maybe Text -> D.DiscordHandler ()
+updateStatus mactivity =
+    D.sendCommand $
         D.UpdateStatus $
             D.UpdateStatusOpts
                 { D.updateStatusOptsSince = Nothing
@@ -145,12 +144,11 @@ updateStatus dis mactivity =
                 , D.updateStatusOptsAFK = False
                 }
 
-eventHandler :: UserConfig -> IORef Db -> D.DiscordHandle -> D.Event -> IO ()
-eventHandler UserConfig{..} db dis event = do
+eventHandler :: UserConfig -> IORef Db -> D.Event -> D.DiscordHandler ()
+eventHandler UserConfig{..} db event = do
     let config =
             Config
-                { configDiscordHandle = dis
-                , configDictKey = userConfigDictKey
+                { configDictKey = userConfigDictKey
                 , configUrbanKey = userConfigUrbanKey
                 , configCommandPrefix = fromMaybe "!" userConfigCommandPrefix
                 , configDb = db
@@ -196,8 +194,7 @@ typingStart (D.TypingInfo userId channelId _utcTime) = do
 
 restCall :: (FromJSON a, D.Request (r a)) => r a -> App ()
 restCall request = do
-    dis <- asks configDiscordHandle
-    r <- liftIO $ D.restCall dis request
+    r <- lift $ D.restCall request
     case r of
         Right _ -> pure ()
         Left err -> liftIO $ print err
@@ -374,8 +371,7 @@ urbanToDictionary (UrbanDefinition def) =
 
 mentionsMe :: D.Message -> App Bool
 mentionsMe message = do
-    dis <- asks configDiscordHandle
-    cache <- liftIO $ D.readCache dis
+    cache <- lift D.readCache
     pure $
         D.userId (D._currentUser cache)
             `elem` map D.userId (D.messageMentions message)
@@ -493,22 +489,21 @@ listResponses message = do
 
 setPlaying :: Command
 setPlaying message = do
-    dis <- asks configDiscordHandle
     dbRef <- asks configDb
     dbFileName <- asks configDbFile
     let (_ : postCommand) = words $ T.unpack $ D.messageText message
     case postCommand of
         [] -> do
-            liftIO $ do
-                updateStatus dis Nothing
+            lift $ updateStatus Nothing
+            liftIO $
                 atomicModifyIORef'
                     dbRef
                     (\d -> (d{dbActivity = Nothing}, ()))
             createMessage (D.messageChannel message) "Removed status"
         pc -> do
             let status = T.pack $ unwords pc
-            liftIO $ do
-                updateStatus dis $ Just status
+            lift $ updateStatus $ Just status
+            liftIO $
                 atomicModifyIORef'
                     dbRef
                     (\d -> (d{dbActivity = Just status}, ()))
