@@ -29,6 +29,7 @@ import Data.Text (Text, intercalate)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.IO as T
+import Data.Time (defaultTimeLocale, formatTime, getCurrentTime, getCurrentTimeZone, utcToLocalTime)
 import Data.Yaml (decodeFileEither)
 import qualified Discord as D
 import qualified Discord.Internal.Rest as D
@@ -95,6 +96,15 @@ defaultConfigFile = "config.yaml"
 defaultDbFile :: FilePath
 defaultDbFile = "db"
 
+logText :: Text -> IO ()
+logText t = do
+    now <- getCurrentTime
+    tz <- getCurrentTimeZone
+    T.putStrLn $
+        T.pack (formatTime defaultTimeLocale "%F %T" $ utcToLocalTime tz now)
+            <> ": "
+            <> t
+
 bigbot :: IO ()
 bigbot = do
     args <- getArgs
@@ -119,15 +129,15 @@ bigbot = do
                 { D.discordToken = userConfigDiscordToken
                 , D.discordOnStart = onStart config
                 , D.discordOnEvent = eventHandler config dbRef
-                , D.discordOnLog = T.putStrLn
+                , D.discordOnLog = logText
                 }
             )
             `catchAll` \e -> return $ T.pack $ show e
     T.putStrLn userFacingError
 
 onStart :: UserConfig -> D.DiscordHandler ()
-onStart config = do
-    liftIO $ T.putStrLn $ "bot started with config " <> T.pack (show config)
+onStart config =
+    liftIO $ logText $ "bot started with config " <> T.pack (show config)
 
 updateStatus :: Maybe Text -> D.DiscordHandler ()
 updateStatus mactivity =
@@ -163,6 +173,7 @@ eventHandler UserConfig{..} dbRef event = do
 
 ready :: IORef Db -> App ()
 ready dbRef = do
+    liftIO $ logText "received ready event, updating activity"
     Db{dbActivity = mactivity} <- liftIO $ readIORef dbRef
     lift $ updateStatus mactivity
 
