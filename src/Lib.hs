@@ -134,9 +134,9 @@ onStart dbRef config = do
 
 keepStatusUpdated :: IORef Db -> D.DiscordHandler ()
 keepStatusUpdated dbRef = forever $ do
-    liftIO $ threadDelay $ 5 * 60 * 1000000 -- every 5 mins
     Db{dbActivity = mactivity} <- liftIO $ readIORef dbRef
     updateStatus mactivity
+    liftIO $ threadDelay $ 5 * 60 * 1000000 -- every 5 mins
 
 updateStatus :: Maybe Text -> D.DiscordHandler ()
 updateStatus mactivity =
