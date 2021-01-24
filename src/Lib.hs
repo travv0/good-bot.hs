@@ -145,16 +145,21 @@ updateStatus mactivity =
                 }
 
 eventHandler :: UserConfig -> IORef Db -> D.Event -> D.DiscordHandler ()
-eventHandler UserConfig{..} db event = do
+eventHandler UserConfig{..} dbRef event = do
     let config =
             Config
                 { configDictKey = userConfigDictKey
                 , configUrbanKey = userConfigUrbanKey
                 , configCommandPrefix = fromMaybe "!" userConfigCommandPrefix
-                , configDb = db
+                , configDb = dbRef
                 , configDbFile =
                     fromMaybe defaultDbFile userConfigDbFile
                 }
+
+    -- workaround for bot losing activity after a time
+    Db{dbActivity = mactivity} <- liftIO $ readIORef dbRef
+    updateStatus mactivity
+
     flip runReaderT config $
         case event of
             D.MessageCreate message -> messageCreate message
