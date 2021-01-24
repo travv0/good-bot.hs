@@ -188,6 +188,7 @@ commands =
     , (isCommand "remove", removeResponse)
     , (isCommand "list", listResponses)
     , (isCommand "playing", setPlaying)
+    , (isCommand "help", simpleReply "lol u dumb")
     , (mentionsMe, respond)
     ]
 
