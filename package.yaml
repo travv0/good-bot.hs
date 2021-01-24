@@ -24,7 +24,6 @@ dependencies:
 - aeson
 - bytestring
 - discord-haskell
-- either
 - exceptions
 - lens
 - lens-aeson

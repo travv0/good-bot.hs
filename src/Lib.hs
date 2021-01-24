@@ -21,7 +21,6 @@ import Data.Aeson (
  )
 import qualified Data.ByteString.Lazy as BSL
 import Data.Char (toLower)
-import Data.Either.Combinators (maybeToRight)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (delete, nub, stripPrefix)
 import Data.Maybe (fromMaybe)
@@ -104,6 +103,10 @@ logText t = do
         T.pack (formatTime defaultTimeLocale "%F %T" $ utcToLocalTime tz now)
             <> ": "
             <> t
+
+logError :: Text -> IO ()
+logError t = do
+    logText $ "Error: " <> t
 
 bigbot :: IO ()
 bigbot = do
@@ -214,7 +217,7 @@ restCall request = do
     r <- lift $ D.restCall request
     case r of
         Right _ -> pure ()
-        Left err -> liftIO $ print err
+        Left err -> liftIO $ logError $ T.pack $ show err
 
 createMessage :: D.ChannelId -> Text -> App ()
 createMessage channelId message = do
@@ -278,9 +281,7 @@ define message = do
 
 buildDefineOutput :: String -> Definition -> Text
 buildDefineOutput word definition = do
-    let shortDefinition = defDefinitions definition
-        mpartOfSpeech = defPartOfSpeech definition
-        definitions = case shortDefinition of
+    let definitions = case defDefinitions definition of
             [def] -> def
             defs ->
                 T.intercalate "\n\n" $
@@ -288,35 +289,25 @@ buildDefineOutput word definition = do
                         (\i def -> T.pack (show i) <> ". " <> def)
                         [1 :: Int ..]
                         defs
-        formattedOutput =
-            "**" <> T.pack word <> "**"
-                <> ( case mpartOfSpeech of
-                        Just partOfSpeech -> " *" <> partOfSpeech <> "*"
-                        Nothing -> ""
-                   )
-                <> "\n"
-                <> definitions
-     in formattedOutput
+     in "**" <> T.pack word <> "**"
+            <> ( case defPartOfSpeech definition of
+                    Just partOfSpeech -> " *" <> partOfSpeech <> "*"
+                    Nothing -> ""
+               )
+            <> "\n"
+            <> definitions
 
 getDefineOutput :: String -> App (Maybe Text)
 getDefineOutput word = do
     response <- getDictionaryResponse word
     buildDefineOutputHandleFail
         word
-        ( maybeToRight
-            "no dictionary.com api key set"
-            (fmap (view responseBody) response)
-            >>= eitherDecode
-        )
+        (response >>= eitherDecode . view responseBody)
         $ Just $ do
             urbanResponse <- getUrbanResponse word
             buildDefineOutputHandleFail
                 word
-                ( maybeToRight
-                    "no urban dictionary api key set"
-                    (fmap (view responseBody) urbanResponse)
-                    >>= decodeUrban
-                )
+                (urbanResponse >>= decodeUrban . view responseBody)
                 Nothing
 
 buildDefineOutputHandleFail ::
@@ -331,33 +322,34 @@ buildDefineOutputHandleFail word (Right defs) _
                 T.intercalate "\n\n" $
                     map (buildDefineOutput word) defs
 buildDefineOutputHandleFail _ (Left err) Nothing =
-    liftIO (print err) >> pure Nothing
-buildDefineOutputHandleFail _ (Left _) (Just fallback) = fallback
+    liftIO (logError $ T.pack err) >> pure Nothing
+buildDefineOutputHandleFail _ (Left err) (Just fallback) =
+    liftIO (logError $ T.pack err) >> fallback
 buildDefineOutputHandleFail _ _ (Just fallback) = fallback
 buildDefineOutputHandleFail _ (Right _) Nothing = pure Nothing
 
-getDictionaryResponse :: String -> App (Maybe (Response BSL.ByteString))
+getDictionaryResponse :: String -> App (Either String (Response BSL.ByteString))
 getDictionaryResponse word = do
     mapiKey <- asks configDictKey
     case mapiKey of
-        Nothing -> pure Nothing
+        Nothing -> pure $ Left "no dictionary.com api key set"
         Just apiKey ->
             liftIO $
-                fmap Just <$> get $
+                fmap Right <$> get $
                     T.unpack $
                         "https://dictionaryapi.com/api/v3/references/collegiate/json/"
                             <> T.pack word
                             <> "?key="
                             <> apiKey
 
-getUrbanResponse :: String -> App (Maybe (Response BSL.ByteString))
+getUrbanResponse :: String -> App (Either String (Response BSL.ByteString))
 getUrbanResponse word = do
     mapiKey <- asks configUrbanKey
     case mapiKey of
-        Nothing -> pure Nothing
+        Nothing -> pure $ Left "no urban dictionary api key set"
         Just apiKey ->
             liftIO $
-                Just
+                Right
                     <$> getWith
                         (urbanOpts apiKey word)
                         "https://mashape-community-urban-dictionary.p.rapidapi.com/define"
@@ -386,7 +378,7 @@ urbanToDictionary :: UrbanDefinition -> [Definition]
 urbanToDictionary (UrbanDefinition def) =
     [Definition Nothing def | not (null def)]
 
-mentionsMe :: D.Message -> App Bool
+mentionsMe :: CommandPredicate
 mentionsMe message = do
     cache <- lift D.readCache
     pure $
