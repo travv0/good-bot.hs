@@ -6,10 +6,11 @@
 
 module Lib (bigbot) where
 
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Lens (view, (&), (.~))
-import Control.Monad (filterM, when)
+import Control.Monad (filterM, forever, when)
 import Control.Monad.Catch (catchAll, catchIOError)
-import Control.Monad.Reader (MonadTrans (lift), ReaderT (runReaderT), asks, forM_, liftIO)
+import Control.Monad.Reader (MonadReader (ask), MonadTrans (lift), ReaderT (runReaderT), asks, forM_, liftIO)
 import Data.Aeson (
     FromJSON (parseJSON),
     defaultOptions,
@@ -117,7 +118,7 @@ bigbot = do
         D.runDiscord
             ( D.def
                 { D.discordToken = userConfigDiscordToken
-                , D.discordOnStart = onStart db config
+                , D.discordOnStart = onStart dbRef config
                 , D.discordOnEvent = eventHandler config dbRef
                 , D.discordOnLog = T.putStrLn
                 }
@@ -125,10 +126,17 @@ bigbot = do
             `catchAll` \e -> return $ T.pack $ show e
     T.putStrLn userFacingError
 
-onStart :: Db -> UserConfig -> D.DiscordHandler ()
-onStart Db{dbActivity = mactivity} config = do
-    updateStatus mactivity
+onStart :: IORef Db -> UserConfig -> D.DiscordHandler ()
+onStart dbRef config = do
+    dis <- ask
+    _ <- liftIO $ forkIO $ runReaderT (keepStatusUpdated dbRef) dis
     liftIO $ T.putStrLn $ "bot started with config " <> T.pack (show config)
+
+keepStatusUpdated :: IORef Db -> D.DiscordHandler ()
+keepStatusUpdated dbRef = forever $ do
+    liftIO $ threadDelay $ 5 * 60 * 1000000 -- every 5 mins
+    Db{dbActivity = mactivity} <- liftIO $ readIORef dbRef
+    updateStatus mactivity
 
 updateStatus :: Maybe Text -> D.DiscordHandler ()
 updateStatus mactivity =
@@ -155,11 +163,6 @@ eventHandler UserConfig{..} dbRef event = do
                 , configDbFile =
                     fromMaybe defaultDbFile userConfigDbFile
                 }
-
-    -- workaround for bot losing activity after a time
-    Db{dbActivity = mactivity} <- liftIO $ readIORef dbRef
-    updateStatus mactivity
-
     flip runReaderT config $
         case event of
             D.MessageCreate message -> messageCreate message
