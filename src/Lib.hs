@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Lib (bigbot) where
 
@@ -20,7 +21,7 @@ import Data.Aeson (
     (.:),
  )
 import qualified Data.ByteString.Lazy as BSL
-import Data.Char (toLower)
+import Data.Char (isAlpha, toLower)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (delete, nub, stripPrefix)
 import Data.Maybe (fromMaybe)
@@ -52,9 +53,22 @@ type App a = ReaderT Config D.DiscordHandler a
 
 data Db = Db
     { dbResponses :: [Text]
-    , dbActivity :: Maybe Text
+    , dbActivity :: Maybe (D.ActivityType, Text)
     }
     deriving (Show, Read)
+
+instance Read D.ActivityType where
+    readsPrec _ s =
+        let (at, rest) = span isAlpha s
+            parsed = case at of
+                "ActivityTypeGame" -> Just D.ActivityTypeGame
+                "ActivityTypeWatching" -> Just D.ActivityTypeWatching
+                "ActivityTypeListening" -> Just D.ActivityTypeListening
+                "ActivityTypeStreaming" -> Just D.ActivityTypeStreaming
+                _ -> Nothing
+         in case parsed of
+                Just a -> [(a, rest)]
+                Nothing -> []
 
 defaultDb :: Db
 defaultDb = Db{dbResponses = ["hi"], dbActivity = Nothing}
@@ -123,8 +137,7 @@ bigbot = do
                     (fromMaybe defaultDbFile userConfigDbFile)
             )
             `catchIOError` \_ -> return Nothing
-    let mdb = dbStr >>= readMaybe
-    let db = fromMaybe defaultDb mdb
+    let db = fromMaybe defaultDb $ dbStr >>= readMaybe
     dbRef <- newIORef db
     userFacingError <-
         D.runDiscord
@@ -142,15 +155,15 @@ onStart :: UserConfig -> D.DiscordHandler ()
 onStart config =
     liftIO $ logText $ "bot started with config " <> T.pack (show config)
 
-updateStatus :: Maybe Text -> D.DiscordHandler ()
-updateStatus mactivity =
+updateStatus :: D.ActivityType -> Maybe Text -> D.DiscordHandler ()
+updateStatus activityType mactivity =
     D.sendCommand $
         D.UpdateStatus $
             D.UpdateStatusOpts
                 { D.updateStatusOptsSince = Nothing
                 , D.updateStatusOptsGame = case mactivity of
                     Just activity ->
-                        Just $ D.Activity activity D.ActivityTypeGame Nothing
+                        Just $ D.Activity activity activityType Nothing
                     Nothing -> Nothing
                 , D.updateStatusOptsNewStatus = D.UpdateStatusOnline
                 , D.updateStatusOptsAFK = False
@@ -178,7 +191,10 @@ ready :: IORef Db -> App ()
 ready dbRef = do
     liftIO $ logText "received ready event, updating activity"
     Db{dbActivity = mactivity} <- liftIO $ readIORef dbRef
-    lift $ updateStatus mactivity
+    case mactivity of
+        Just (activityType, activity) ->
+            lift $ updateStatus activityType $ Just activity
+        Nothing -> pure ()
 
 type Command = D.Message -> App ()
 type CommandPredicate = D.Message -> App Bool
@@ -190,7 +206,9 @@ commands =
     , (isCommand "add", addResponse)
     , (isCommand "remove", removeResponse)
     , (isCommand "list", listResponses)
-    , (isCommand "playing", setPlaying)
+    , (isCommand "playing", setActivity D.ActivityTypeGame)
+    , (isCommand "listeningto", setActivity D.ActivityTypeListening)
+    , (isCommand "watching", setActivity D.ActivityTypeWatching)
     , (isCommand "help", simpleReply "lol u dumb")
     , (mentionsMe, respond)
     ]
@@ -425,10 +443,15 @@ respond message
 isCommand :: Text -> CommandPredicate
 isCommand command message = do
     prefix <- asks configCommandPrefix
-    pure $ messageStartsWith (prefix <> command) message
+    pure $
+        messageEquals (prefix <> command) message
+            || messageStartsWith (prefix <> command <> " ") message
 
 messageStartsWith :: Text -> D.Message -> Bool
 messageStartsWith text = (text `T.isPrefixOf`) . T.toLower . D.messageText
+
+messageEquals :: Text -> D.Message -> Bool
+messageEquals text = (text ==) . T.toLower . D.messageText
 
 simpleReply :: Text -> Command
 simpleReply replyText message =
@@ -496,14 +519,14 @@ listResponses message = do
     responses <- liftIO $ intercalate "\n" . dbResponses <$> readIORef dbRef
     createMessage (D.messageChannel message) responses
 
-setPlaying :: Command
-setPlaying message = do
+setActivity :: D.ActivityType -> Command
+setActivity activityType message = do
     dbRef <- asks configDb
     dbFileName <- asks configDbFile
     let (_ : postCommand) = words $ T.unpack $ D.messageText message
     case postCommand of
         [] -> do
-            lift $ updateStatus Nothing
+            lift $ updateStatus activityType Nothing
             liftIO $
                 atomicModifyIORef'
                     dbRef
@@ -511,13 +534,20 @@ setPlaying message = do
             createMessage (D.messageChannel message) "Removed status"
         pc -> do
             let status = T.pack $ unwords pc
-            lift $ updateStatus $ Just status
+            lift $ updateStatus activityType $ Just status
             liftIO $
                 atomicModifyIORef'
                     dbRef
-                    (\d -> (d{dbActivity = Just status}, ()))
+                    (\d -> (d{dbActivity = Just (activityType, status)}, ()))
             createMessage (D.messageChannel message) $
-                "Updated status to **" <> status <> "**"
+                "Updated status to **" <> activityTypeText <> " " <> status
+                    <> "**"
     liftIO $ do
         db <- readIORef dbRef
         writeFile dbFileName $ show db
+  where
+    activityTypeText = case activityType of
+        D.ActivityTypeGame -> "Playing"
+        D.ActivityTypeListening -> "Listening to"
+        D.ActivityTypeStreaming -> "Streaming"
+        D.ActivityTypeWatching -> "Watching"
