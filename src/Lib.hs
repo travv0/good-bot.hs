@@ -10,7 +10,13 @@ module Lib (bigbot) where
 import Control.Lens (view, (&), (.~))
 import Control.Monad (filterM, when)
 import Control.Monad.Catch (catchAll, catchIOError)
-import Control.Monad.Reader (MonadTrans (lift), ReaderT (runReaderT), asks, forM_, liftIO)
+import Control.Monad.Reader (
+    MonadTrans (lift),
+    ReaderT (runReaderT),
+    asks,
+    forM_,
+    liftIO,
+ )
 import Data.Aeson (
     FromJSON (parseJSON),
     defaultOptions,
@@ -29,7 +35,13 @@ import Data.Text (Text, intercalate)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.IO as T
-import Data.Time (defaultTimeLocale, formatTime, getCurrentTime, getCurrentTimeZone, utcToLocalTime)
+import Data.Time (
+    defaultTimeLocale,
+    formatTime,
+    getCurrentTime,
+    getCurrentTimeZone,
+    utcToLocalTime,
+ )
 import Data.Yaml (decodeFileEither)
 import qualified Discord as D
 import qualified Discord.Internal.Rest as D
@@ -119,8 +131,7 @@ logText t = do
             <> t
 
 logError :: Text -> IO ()
-logError t = do
-    logText $ "Error: " <> t
+logError t = logText $ "Error: " <> t
 
 bigbot :: IO ()
 bigbot = do
@@ -170,7 +181,7 @@ updateStatus activityType mactivity =
                 }
 
 eventHandler :: UserConfig -> IORef Db -> D.Event -> D.DiscordHandler ()
-eventHandler UserConfig{..} dbRef event = do
+eventHandler UserConfig{..} dbRef event =
     let config =
             Config
                 { configDictKey = userConfigDictKey
@@ -180,12 +191,12 @@ eventHandler UserConfig{..} dbRef event = do
                 , configDbFile =
                     fromMaybe defaultDbFile userConfigDbFile
                 }
-    flip runReaderT config $
-        case event of
-            D.Ready{} -> ready dbRef
-            D.MessageCreate message -> messageCreate message
-            D.TypingStart typingInfo -> typingStart typingInfo
-            _ -> pure ()
+     in flip runReaderT config $
+            case event of
+                D.Ready{} -> ready dbRef
+                D.MessageCreate message -> messageCreate message
+                D.TypingStart typingInfo -> typingStart typingInfo
+                _ -> pure ()
 
 ready :: IORef Db -> App ()
 ready dbRef = do
@@ -210,19 +221,22 @@ commands =
     , (isCommand "listeningto", setActivity D.ActivityTypeListening)
     , (isCommand "watching", setActivity D.ActivityTypeWatching)
     , (isCommand "help", simpleReply "lol u dumb")
+    , (isCarl, simpleReply "Carl is a cuck")
     , (mentionsMe, respond)
     ]
 
 messageCreate :: D.Message -> App ()
-messageCreate message
-    | not (fromBot message) = do
-        matches <- filterM (\(p, _) -> p message) commands
-        case matches of
-            ((_, cmd) : _) -> cmd message
-            _ -> pure ()
-    | D.userId (D.messageAuthor message) == 235148962103951360 =
-        simpleReply "Carl is a cuck" message
-    | otherwise = pure ()
+messageCreate message = do
+    matches <- filterM (\(p, _) -> p message) commands
+    case matches of
+        ((_, cmd) : _) -> cmd message
+        _ -> pure ()
+
+isUser :: D.UserId -> CommandPredicate
+isUser userId message = pure $ D.userId (D.messageAuthor message) == userId
+
+isCarl :: CommandPredicate
+isCarl = isUser 235148962103951360
 
 typingStart :: D.TypingInfo -> App ()
 typingStart (D.TypingInfo userId channelId _utcTime) = do
@@ -238,9 +252,9 @@ restCall request = do
         Left err -> liftIO $ logError $ T.pack $ show err
 
 createMessage :: D.ChannelId -> Text -> App ()
-createMessage channelId message = do
+createMessage channelId message =
     let chunks = T.chunksOf 2000 message
-    forM_ chunks $ \chunk -> restCall $ D.CreateMessage channelId chunk
+     in forM_ chunks $ \chunk -> restCall $ D.CreateMessage channelId chunk
 
 createGuildBan :: D.GuildId -> D.UserId -> Text -> App ()
 createGuildBan guildId userId banMessage =
@@ -298,7 +312,7 @@ define message = do
                         "No definition found for **" <> T.pack phrase <> "**"
 
 buildDefineOutput :: String -> Definition -> Text
-buildDefineOutput word definition = do
+buildDefineOutput word definition =
     let definitions = case defDefinitions definition of
             [def] -> def
             defs ->
@@ -441,11 +455,14 @@ respond message
         createMessage (D.messageChannel message) $ responses !! responseNum
 
 isCommand :: Text -> CommandPredicate
-isCommand command message = do
-    prefix <- asks configCommandPrefix
-    pure $
-        messageEquals (prefix <> command) message
-            || messageStartsWith (prefix <> command <> " ") message
+isCommand command message =
+    if fromBot message
+        then pure False
+        else do
+            prefix <- asks configCommandPrefix
+            pure $
+                messageEquals (prefix <> command) message
+                    || messageStartsWith (prefix <> command <> " ") message
 
 messageStartsWith :: Text -> D.Message -> Bool
 messageStartsWith text = (text `T.isPrefixOf`) . T.toLower . D.messageText
