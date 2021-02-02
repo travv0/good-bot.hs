@@ -200,7 +200,6 @@ eventHandler UserConfig{..} dbRef event =
 
 ready :: IORef Db -> App ()
 ready dbRef = do
-    liftIO $ logText "received ready event, updating activity"
     Db{dbActivity = mactivity} <- liftIO $ readIORef dbRef
     case mactivity of
         Just (activityType, activity) ->
@@ -222,15 +221,27 @@ commands =
     , (isCommand "watching", setActivity D.ActivityTypeWatching)
     , (isCommand "help", simpleReply "lol u dumb")
     , (isCarl, simpleReply "Carl is a cuck")
-    , (mentionsMe, respond)
+    ,
+        ( mentionsMe ||| messageContains "@everyone" ||| messageContains "@here"
+        , respond
+        )
     ]
 
 messageCreate :: D.Message -> App ()
 messageCreate message = do
-    matches <- filterM (\(p, _) -> p message) commands
-    case matches of
-        ((_, cmd) : _) -> cmd message
-        _ -> pure ()
+    self <- isSelf message
+    if self
+        then pure ()
+        else do
+            matches <- filterM (\(p, _) -> p message) commands
+            case matches of
+                ((_, cmd) : _) -> cmd message
+                _ -> pure ()
+
+isSelf :: CommandPredicate
+isSelf message = do
+    cache <- lift D.readCache
+    pure $ D.userId (D._currentUser cache) == D.userId (D.messageAuthor message)
 
 isUser :: D.UserId -> CommandPredicate
 isUser userId message = pure $ D.userId (D.messageAuthor message) == userId
@@ -454,21 +465,36 @@ respond message
         responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
         createMessage (D.messageChannel message) $ responses !! responseNum
 
+infixl 6 |||
+(|||) :: CommandPredicate -> CommandPredicate -> CommandPredicate
+(pred1 ||| pred2) message = do
+    p1 <- pred1 message
+    p2 <- pred2 message
+    pure $ p1 || p2
+
 isCommand :: Text -> CommandPredicate
 isCommand command message =
     if fromBot message
         then pure False
         else do
             prefix <- asks configCommandPrefix
-            pure $
-                messageEquals (prefix <> command) message
-                    || messageStartsWith (prefix <> command <> " ") message
+            ( messageEquals (prefix <> command)
+                    ||| messageStartsWith (prefix <> command <> " ")
+                )
+                message
 
-messageStartsWith :: Text -> D.Message -> Bool
-messageStartsWith text = (text `T.isPrefixOf`) . T.toLower . D.messageText
+messageStartsWith :: Text -> CommandPredicate
+messageStartsWith text =
+    pure
+        . (text `T.isPrefixOf`)
+        . T.toLower
+        . D.messageText
 
-messageEquals :: Text -> D.Message -> Bool
-messageEquals text = (text ==) . T.toLower . D.messageText
+messageEquals :: Text -> CommandPredicate
+messageEquals text = pure . (text ==) . T.toLower . D.messageText
+
+messageContains :: Text -> CommandPredicate
+messageContains text = pure . (text `T.isInfixOf`) . T.toLower . D.messageText
 
 simpleReply :: Text -> Command
 simpleReply replyText message =
