@@ -7,6 +7,14 @@
 
 module Lib (bigbot) where
 
+import Control.Concurrent.STM (
+    TVar,
+    atomically,
+    modifyTVar',
+    newTVarIO,
+    readTVar,
+    readTVarIO,
+ )
 import Control.Lens (view, (&), (.~))
 import Control.Monad (filterM, when)
 import Control.Monad.Catch (catchAll, catchIOError)
@@ -28,7 +36,6 @@ import Data.Aeson (
  )
 import qualified Data.ByteString.Lazy as BSL
 import Data.Char (isAlpha, toLower)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (delete, nub, stripPrefix)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text, intercalate)
@@ -89,7 +96,7 @@ data Config = Config
     { configDictKey :: Maybe Text
     , configUrbanKey :: Maybe Text
     , configCommandPrefix :: Text
-    , configDb :: IORef Db
+    , configDb :: TVar Db
     , configDbFile :: FilePath
     }
 
@@ -149,7 +156,7 @@ bigbot = do
             )
             `catchIOError` \_ -> return Nothing
     let db = fromMaybe defaultDb $ dbStr >>= readMaybe
-    dbRef <- newIORef db
+    dbRef <- newTVarIO db
     userFacingError <-
         D.runDiscord
             ( D.def
@@ -180,7 +187,7 @@ updateStatus activityType mactivity =
                 , D.updateStatusOptsAFK = False
                 }
 
-eventHandler :: UserConfig -> IORef Db -> D.Event -> D.DiscordHandler ()
+eventHandler :: UserConfig -> TVar Db -> D.Event -> D.DiscordHandler ()
 eventHandler UserConfig{..} dbRef event =
     let config =
             Config
@@ -198,9 +205,9 @@ eventHandler UserConfig{..} dbRef event =
                 D.TypingStart typingInfo -> typingStart typingInfo
                 _ -> pure ()
 
-ready :: IORef Db -> App ()
+ready :: TVar Db -> App ()
 ready dbRef = do
-    Db{dbActivity = mactivity} <- liftIO $ readIORef dbRef
+    Db{dbActivity = mactivity} <- liftIO $ readTVarIO dbRef
     case mactivity of
         Just (activityType, activity) ->
             lift $ updateStatus activityType $ Just activity
@@ -461,7 +468,7 @@ respond message
         createMessage (D.messageChannel message) "i am fine thank u and u?"
     | otherwise = do
         db <- asks configDb
-        responses <- liftIO $ dbResponses <$> readIORef db
+        responses <- liftIO $ dbResponses <$> readTVarIO db
         responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
         createMessage (D.messageChannel message) $ responses !! responseNum
 
@@ -511,13 +518,14 @@ addResponse message = do
             let response = T.pack $ unwords pc
             dbRef <- asks configDb
             dbFileName <- asks configDbFile
-            liftIO $
-                atomicModifyIORef'
-                    dbRef
-                    ( \d ->
-                        (d{dbResponses = nub $ response : dbResponses d}, ())
-                    )
-            db <- liftIO $ readIORef dbRef
+            db <- liftIO $
+                atomically $ do
+                    modifyTVar'
+                        dbRef
+                        ( \d ->
+                            d{dbResponses = nub $ response : dbResponses d}
+                        )
+                    readTVar dbRef
             liftIO $ writeFile dbFileName $ show db
             createMessage (D.messageChannel message) $
                 "Added **" <> response <> "** to responses"
@@ -534,21 +542,21 @@ removeResponse message = do
             let response = T.pack $ unwords pc
             dbRef <- asks configDb
             dbFileName <- asks configDbFile
-            oldResponses <- liftIO $ dbResponses <$> readIORef dbRef
+            oldResponses <- liftIO $ dbResponses <$> readTVarIO dbRef
             if response `elem` oldResponses
                 then do
-                    liftIO $
-                        atomicModifyIORef'
-                            dbRef
-                            ( \d ->
-                                ( d
-                                    { dbResponses =
-                                        delete response $ dbResponses d
-                                    }
-                                , ()
+                    db <- liftIO $
+                        atomically $ do
+                            modifyTVar'
+                                dbRef
+                                ( \d ->
+                                    d
+                                        { dbResponses =
+                                            delete response $
+                                                dbResponses d
+                                        }
                                 )
-                            )
-                    db <- liftIO $ readIORef dbRef
+                            readTVar dbRef
                     liftIO $ writeFile dbFileName $ show db
                     createMessage (D.messageChannel message) $
                         "Removed **" <> response <> "** from responses"
@@ -559,7 +567,7 @@ removeResponse message = do
 listResponses :: Command
 listResponses message = do
     dbRef <- asks configDb
-    responses <- liftIO $ intercalate "\n" . dbResponses <$> readIORef dbRef
+    responses <- liftIO $ intercalate "\n" . dbResponses <$> readTVarIO dbRef
     createMessage (D.messageChannel message) responses
 
 setActivity :: D.ActivityType -> Command
@@ -571,22 +579,24 @@ setActivity activityType message = do
         [] -> do
             lift $ updateStatus activityType Nothing
             liftIO $
-                atomicModifyIORef'
-                    dbRef
-                    (\d -> (d{dbActivity = Nothing}, ()))
+                atomically $
+                    modifyTVar'
+                        dbRef
+                        (\d -> d{dbActivity = Nothing})
             createMessage (D.messageChannel message) "Removed status"
         pc -> do
             let status = T.pack $ unwords pc
             lift $ updateStatus activityType $ Just status
             liftIO $
-                atomicModifyIORef'
-                    dbRef
-                    (\d -> (d{dbActivity = Just (activityType, status)}, ()))
+                atomically $
+                    modifyTVar'
+                        dbRef
+                        (\d -> d{dbActivity = Just (activityType, status)})
             createMessage (D.messageChannel message) $
                 "Updated status to **" <> activityTypeText <> " " <> status
                     <> "**"
     liftIO $ do
-        db <- readIORef dbRef
+        db <- readTVarIO dbRef
         writeFile dbFileName $ show db
   where
     activityTypeText = case activityType of

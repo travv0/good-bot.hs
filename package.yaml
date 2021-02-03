@@ -30,6 +30,7 @@ dependencies:
 - mtl
 - random
 - split
+- stm
 - text
 - time
 - wreq
