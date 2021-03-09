@@ -35,7 +35,7 @@ import Data.Aeson (
     (.:),
  )
 import qualified Data.ByteString.Lazy as BSL
-import Data.Char (isAlpha, toLower)
+import Data.Char (isAlpha, isSpace, toLower)
 import Data.List (delete, nub, stripPrefix)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text, intercalate)
@@ -312,24 +312,36 @@ instance FromJSON Definition where
                 , defDefinitions = definitions
                 }
 
+stripCommand :: D.Message -> App (Maybe Text)
+stripCommand message = do
+    prefix <- asks configCommandPrefix
+    case T.stripPrefix prefix $ D.messageText message of
+        Nothing -> return Nothing
+        Just withoutPrefix ->
+            let withoutCommand =
+                    T.dropWhile isSpace $
+                        T.dropWhile (not . isSpace) withoutPrefix
+             in case withoutCommand of
+                    "" -> return Nothing
+                    m -> return $ Just m
+
 define :: Command
 define message = do
-    let (_ : wordsToDefine) = words $ T.unpack $ D.messageText message
-    case wordsToDefine of
-        [] ->
+    msg <- stripCommand message
+    case msg of
+        Nothing ->
             createMessage
                 (D.messageChannel message)
                 "Missing word/phrase to define"
-        wtd -> do
-            let phrase = unwords wtd
+        Just phrase -> do
             moutput <- getDefineOutput phrase
             case moutput of
                 Just output -> createMessage (D.messageChannel message) output
                 Nothing ->
                     createMessage (D.messageChannel message) $
-                        "No definition found for **" <> T.pack phrase <> "**"
+                        "No definition found for **" <> phrase <> "**"
 
-buildDefineOutput :: String -> Definition -> Text
+buildDefineOutput :: Text -> Definition -> Text
 buildDefineOutput word definition =
     let definitions = case defDefinitions definition of
             [def] -> def
@@ -339,7 +351,7 @@ buildDefineOutput word definition =
                         (\i def -> T.pack (show i) <> ". " <> def)
                         [1 :: Int ..]
                         defs
-     in "**" <> T.pack word <> "**"
+     in "**" <> word <> "**"
             <> ( case defPartOfSpeech definition of
                     Just partOfSpeech -> " *" <> partOfSpeech <> "*"
                     Nothing -> ""
@@ -347,7 +359,7 @@ buildDefineOutput word definition =
             <> "\n"
             <> definitions
 
-getDefineOutput :: String -> App (Maybe Text)
+getDefineOutput :: Text -> App (Maybe Text)
 getDefineOutput word = do
     response <- getDictionaryResponse word
     buildDefineOutputHandleFail
@@ -361,7 +373,7 @@ getDefineOutput word = do
                 Nothing
 
 buildDefineOutputHandleFail ::
-    String ->
+    Text ->
     Either String [Definition] ->
     Maybe (App (Maybe Text)) ->
     App (Maybe Text)
@@ -378,7 +390,7 @@ buildDefineOutputHandleFail _ (Left err) (Just fallback) =
 buildDefineOutputHandleFail _ _ (Just fallback) = fallback
 buildDefineOutputHandleFail _ (Right _) Nothing = pure Nothing
 
-getDictionaryResponse :: String -> App (Either String (Response BSL.ByteString))
+getDictionaryResponse :: Text -> App (Either String (Response BSL.ByteString))
 getDictionaryResponse word = do
     mapiKey <- asks configDictKey
     case mapiKey of
@@ -388,11 +400,11 @@ getDictionaryResponse word = do
                 fmap Right <$> get $
                     T.unpack $
                         "https://dictionaryapi.com/api/v3/references/collegiate/json/"
-                            <> T.pack word
+                            <> word
                             <> "?key="
                             <> apiKey
 
-getUrbanResponse :: String -> App (Either String (Response BSL.ByteString))
+getUrbanResponse :: Text -> App (Either String (Response BSL.ByteString))
 getUrbanResponse word = do
     mapiKey <- asks configUrbanKey
     case mapiKey of
@@ -404,13 +416,13 @@ getUrbanResponse word = do
                         (urbanOpts apiKey word)
                         "https://mashape-community-urban-dictionary.p.rapidapi.com/define"
 
-urbanOpts :: Text -> String -> W.Options
+urbanOpts :: Text -> Text -> W.Options
 urbanOpts apiKey term =
     defaults
         & header "x-rapidapi-key" .~ [T.encodeUtf8 apiKey]
         & header "x-rapidapi-host" .~ ["mashape-community-urban-dictionary.p.rapidapi.com"]
         & header "useQueryString" .~ ["true"]
-        & param "term" .~ [T.pack term]
+        & param "term" .~ [term]
 
 newtype UrbanDefinition = UrbanDefinition {urbanDefDefinition :: [Text]}
     deriving (Show)
@@ -481,11 +493,10 @@ simpleReply replyText message =
 
 addResponse :: Command
 addResponse message = do
-    let (_ : postCommand) = words $ T.unpack $ D.messageText message
+    postCommand <- stripCommand message
     case postCommand of
-        [] -> createMessage (D.messageChannel message) "Missing response to add"
-        pc -> do
-            let response = T.pack $ unwords pc
+        Nothing -> createMessage (D.messageChannel message) "Missing response to add"
+        Just response -> do
             dbRef <- asks configDb
             dbFileName <- asks configDbFile
             db <- liftIO $
@@ -502,14 +513,13 @@ addResponse message = do
 
 removeResponse :: Command
 removeResponse message = do
-    let (_ : postCommand) = words $ T.unpack $ D.messageText message
+    postCommand <- stripCommand message
     case postCommand of
-        [] ->
+        Nothing ->
             createMessage
                 (D.messageChannel message)
                 "Missing response to remove"
-        pc -> do
-            let response = T.pack $ unwords pc
+        Just response -> do
             dbRef <- asks configDb
             dbFileName <- asks configDbFile
             oldResponses <- liftIO $ dbResponses <$> readTVarIO dbRef
@@ -544,9 +554,9 @@ setActivity :: D.ActivityType -> Command
 setActivity activityType message = do
     dbRef <- asks configDb
     dbFileName <- asks configDbFile
-    let (_ : postCommand) = words $ T.unpack $ D.messageText message
+    postCommand <- stripCommand message
     case postCommand of
-        [] -> do
+        Nothing -> do
             lift $ updateStatus activityType Nothing
             liftIO $
                 atomically $
@@ -554,8 +564,7 @@ setActivity activityType message = do
                         dbRef
                         (\d -> d{dbActivity = Nothing})
             createMessage (D.messageChannel message) "Removed status"
-        pc -> do
-            let status = T.pack $ unwords pc
+        Just status -> do
             lift $ updateStatus activityType $ Just status
             liftIO $
                 atomically $
