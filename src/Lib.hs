@@ -436,41 +436,11 @@ mentionsMe message = do
             `elem` map D.userId (D.messageMentions message)
 
 respond :: Command
-respond message
-    | "thanks" `T.isInfixOf` T.toLower (D.messageText message)
-        || "thank you" `T.isInfixOf` T.toLower (D.messageText message)
-        || "thx" `T.isInfixOf` T.toLower (D.messageText message)
-        || "thk" `T.isInfixOf` T.toLower (D.messageText message) =
-        createMessage (D.messageChannel message) "u r welcome"
-    | "hi" `T.isInfixOf` T.toLower (D.messageText message)
-        || "hello" `T.isInfixOf` T.toLower (D.messageText message)
-        || "yo" `T.isInfixOf` T.toLower (D.messageText message)
-        || "sup" `T.isInfixOf` T.toLower (D.messageText message)
-        || ( "what" `T.isInfixOf` T.toLower (D.messageText message)
-                && "up" `T.isInfixOf` T.toLower (D.messageText message)
-           )
-        || "howdy" `T.isInfixOf` T.toLower (D.messageText message) =
-        createMessage (D.messageChannel message) "hi"
-    | "wb" `T.isInfixOf` T.toLower (D.messageText message)
-        || "welcom" `T.isInfixOf` T.toLower (D.messageText message)
-        || "welcum" `T.isInfixOf` T.toLower (D.messageText message) =
-        createMessage (D.messageChannel message) "thx"
-    | "mornin" `T.isInfixOf` T.toLower (D.messageText message)
-        || "gm" `T.isInfixOf` T.toLower (D.messageText message) =
-        createMessage (D.messageChannel message) "gm"
-    | "night" `T.isInfixOf` T.toLower (D.messageText message)
-        || "gn" `T.isInfixOf` T.toLower (D.messageText message) =
-        createMessage (D.messageChannel message) "gn"
-    | "how" `T.isInfixOf` T.toLower (D.messageText message)
-        && ( " u" `T.isInfixOf` T.toLower (D.messageText message)
-                || " you" `T.isInfixOf` T.toLower (D.messageText message)
-           ) =
-        createMessage (D.messageChannel message) "i am fine thank u and u?"
-    | otherwise = do
-        db <- asks configDb
-        responses <- liftIO $ dbResponses <$> readTVarIO db
-        responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
-        createMessage (D.messageChannel message) $ responses !! responseNum
+respond message = do
+    db <- asks configDb
+    responses <- liftIO $ dbResponses <$> readTVarIO db
+    responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
+    createMessage (D.messageChannel message) $ responses !! responseNum
 
 infixl 6 |||
 (|||) :: CommandPredicate -> CommandPredicate -> CommandPredicate
