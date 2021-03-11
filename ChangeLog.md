@@ -1,3 +1,3 @@
-# Changelog for bigbot
+# Changelog for good-bot
 
 ## Unreleased changes

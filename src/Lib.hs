@@ -5,7 +5,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
-module Lib (bigbot) where
+module Lib (goodbot) where
 
 import Control.Concurrent.STM (
     TVar,
@@ -140,8 +140,8 @@ logText t = do
 logError :: Text -> IO ()
 logError t = logText $ "Error: " <> t
 
-bigbot :: IO ()
-bigbot = do
+goodbot :: IO ()
+goodbot = do
     args <- getArgs
     let configFile = case args of
             [] -> defaultConfigFile
