@@ -213,13 +213,11 @@ ready dbRef = do
             lift $ updateStatus activityType $ Just activity
         Nothing -> pure ()
 
-type Command = D.Message -> App ()
+type CommandFunc = D.Message -> App ()
 type Predicate = D.Message -> App Bool
-data CommandPredicate
-    = Command {commandName :: Text, commandHelpText :: Text}
-    | Predicate (D.Message -> App Bool)
+data Command = Command {commandName :: Text, commandHelpText :: Text}
 
-commands :: [(CommandPredicate, Command)]
+commands :: [(Command, CommandFunc)]
 commands =
     [
         ( Command{commandName = "rr", commandHelpText = "Play Russian Roulette!"}
@@ -278,12 +276,15 @@ commands =
         ( Command{commandName = "help", commandHelpText = "Show this help."}
         , showHelp
         )
-    , (Predicate isCarl, simpleReply "Carl is a cuck")
+    ]
+
+predicates :: [(Predicate, CommandFunc)]
+predicates =
+    [ (isCarl, simpleReply "Carl is a cuck")
     ,
-        ( Predicate $
-            mentionsMe
-                ||| messageContains "@everyone"
-                ||| messageContains "@here"
+        ( mentionsMe
+            ||| messageContains "@everyone"
+            ||| messageContains "@here"
         , respond
         )
     ]
@@ -294,16 +295,20 @@ messageCreate message = do
     if self
         then pure ()
         else do
-            matches <-
+            commandMatches <-
                 filterM
-                    ( \(p, _) -> case p of
-                        Predicate cp -> cp message
-                        Command{commandName = c} -> isCommand c message
-                    )
+                    (\(Command{commandName = c}, _) -> isCommand c message)
                     commands
-            case matches of
+            case commandMatches of
                 ((_, cmd) : _) -> cmd message
-                _ -> pure ()
+                _ -> do
+                    predicateMatches <-
+                        filterM
+                            (\(p, _) -> p message)
+                            predicates
+                    case predicateMatches of
+                        ((_, c) : _) -> c message
+                        _ -> pure ()
 
 isSelf :: Predicate
 isSelf message = do
@@ -345,7 +350,7 @@ createGuildBan guildId userId banMessage =
 fromBot :: D.Message -> Bool
 fromBot m = D.userIsBot (D.messageAuthor m)
 
-russianRoulette :: Command
+russianRoulette :: CommandFunc
 russianRoulette message = do
     chamber <- liftIO $ (`mod` 6) <$> (randomIO :: IO Int)
     case (chamber, D.messageGuild message) of
@@ -385,7 +390,7 @@ stripCommand message = do
                     "" -> return Nothing
                     m -> return $ Just m
 
-define :: Command
+define :: CommandFunc
 define message = do
     msg <- stripCommand message
     case msg of
@@ -507,14 +512,14 @@ mentionsMe message = do
         D.userId (D._currentUser cache)
             `elem` map D.userId (D.messageMentions message)
 
-respond :: Command
+respond :: CommandFunc
 respond message = do
     db <- asks configDb
     responses <- liftIO $ dbResponses <$> readTVarIO db
     responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
     createMessage (D.messageChannel message) $ responses !! responseNum
 
-showHelp :: Command
+showHelp :: CommandFunc
 showHelp message = do
     prefix <- asks configCommandPrefix
     let helpText =
@@ -523,10 +528,8 @@ showHelp message = do
                 <> intercalate
                     "\n"
                     ( map
-                        ( \(p, _) -> case p of
-                            Command{..} ->
-                                "**" <> commandName <> "** - " <> commandHelpText
-                            _ -> ""
+                        ( \(Command{..}, _) ->
+                            "**" <> commandName <> "** - " <> commandHelpText
                         )
                         commands
                     )
@@ -563,13 +566,13 @@ messageEquals text = pure . (text ==) . T.toLower . D.messageText
 messageContains :: Text -> Predicate
 messageContains text = pure . (text `T.isInfixOf`) . T.toLower . D.messageText
 
-simpleReply :: Text -> Command
+simpleReply :: Text -> CommandFunc
 simpleReply replyText message =
     createMessage
         (D.messageChannel message)
         replyText
 
-addResponse :: Command
+addResponse :: CommandFunc
 addResponse message = do
     postCommand <- stripCommand message
     case postCommand of
@@ -589,7 +592,7 @@ addResponse message = do
             createMessage (D.messageChannel message) $
                 "Added **" <> response <> "** to responses"
 
-removeResponse :: Command
+removeResponse :: CommandFunc
 removeResponse message = do
     postCommand <- stripCommand message
     case postCommand of
@@ -622,13 +625,13 @@ removeResponse message = do
                     createMessage (D.messageChannel message) $
                         "Response **" <> response <> "** not found"
 
-listResponses :: Command
+listResponses :: CommandFunc
 listResponses message = do
     dbRef <- asks configDb
     responses <- liftIO $ intercalate "\n" . dbResponses <$> readTVarIO dbRef
     createMessage (D.messageChannel message) responses
 
-setActivity :: D.ActivityType -> Command
+setActivity :: D.ActivityType -> CommandFunc
 setActivity activityType message = do
     dbRef <- asks configDb
     dbFileName <- asks configDbFile
