@@ -214,22 +214,76 @@ ready dbRef = do
         Nothing -> pure ()
 
 type Command = D.Message -> App ()
-type CommandPredicate = D.Message -> App Bool
+type Predicate = D.Message -> App Bool
+data CommandPredicate
+    = Command {commandName :: Text, commandHelpText :: Text}
+    | Predicate (D.Message -> App Bool)
 
 commands :: [(CommandPredicate, Command)]
 commands =
-    [ (isCommand "rr", russianRoulette)
-    , (isCommand "define", define)
-    , (isCommand "add", addResponse)
-    , (isCommand "remove", removeResponse)
-    , (isCommand "list", listResponses)
-    , (isCommand "playing", setActivity D.ActivityTypeGame)
-    , (isCommand "listeningto", setActivity D.ActivityTypeListening)
-    , (isCommand "watching", setActivity D.ActivityTypeWatching)
-    , (isCommand "help", simpleReply "lol u dumb")
-    , (isCarl, simpleReply "Carl is a cuck")
+    [
+        ( Command{commandName = "rr", commandHelpText = "Play Russian Roulette!"}
+        , russianRoulette
+        )
     ,
-        ( mentionsMe ||| messageContains "@everyone" ||| messageContains "@here"
+        ( Command
+            { commandName = "define"
+            , commandHelpText = "Look up the definition of a word or phrase."
+            }
+        , define
+        )
+    ,
+        ( Command
+            { commandName = "add"
+            , commandHelpText = "Add a response to be randomly selected when the bot replies after being pinged."
+            }
+        , addResponse
+        )
+    ,
+        ( Command
+            { commandName = "remove"
+            , commandHelpText = "Remove a response from the bot's response pool."
+            }
+        , removeResponse
+        )
+    ,
+        ( Command
+            { commandName = "list"
+            , commandHelpText = "List all responses in the response pool."
+            }
+        , listResponses
+        )
+    ,
+        ( Command
+            { commandName = "playing"
+            , commandHelpText = "Set bot's activity to Playing."
+            }
+        , setActivity D.ActivityTypeGame
+        )
+    ,
+        ( Command
+            { commandName = "listeningto"
+            , commandHelpText = "Set bot's activity to Listening To."
+            }
+        , setActivity D.ActivityTypeListening
+        )
+    ,
+        ( Command
+            { commandName = "watching"
+            , commandHelpText = "Set bot's activity to Watching."
+            }
+        , setActivity D.ActivityTypeWatching
+        )
+    ,
+        ( Command{commandName = "help", commandHelpText = "Show this help."}
+        , showHelp
+        )
+    , (Predicate isCarl, simpleReply "Carl is a cuck")
+    ,
+        ( Predicate $
+            mentionsMe
+                ||| messageContains "@everyone"
+                ||| messageContains "@here"
         , respond
         )
     ]
@@ -240,20 +294,26 @@ messageCreate message = do
     if self
         then pure ()
         else do
-            matches <- filterM (\(p, _) -> p message) commands
+            matches <-
+                filterM
+                    ( \(p, _) -> case p of
+                        Predicate cp -> cp message
+                        Command{commandName = c} -> isCommand c message
+                    )
+                    commands
             case matches of
                 ((_, cmd) : _) -> cmd message
                 _ -> pure ()
 
-isSelf :: CommandPredicate
+isSelf :: Predicate
 isSelf message = do
     cache <- lift D.readCache
     pure $ D.userId (D._currentUser cache) == D.userId (D.messageAuthor message)
 
-isUser :: D.UserId -> CommandPredicate
+isUser :: D.UserId -> Predicate
 isUser userId message = pure $ D.userId (D.messageAuthor message) == userId
 
-isCarl :: CommandPredicate
+isCarl :: Predicate
 isCarl = isUser 235148962103951360
 
 typingStart :: D.TypingInfo -> App ()
@@ -440,7 +500,7 @@ urbanToDictionary :: UrbanDefinition -> [Definition]
 urbanToDictionary (UrbanDefinition def) =
     [Definition Nothing def | not (null def)]
 
-mentionsMe :: CommandPredicate
+mentionsMe :: Predicate
 mentionsMe message = do
     cache <- lift D.readCache
     pure $
@@ -454,14 +514,32 @@ respond message = do
     responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
     createMessage (D.messageChannel message) $ responses !! responseNum
 
+showHelp :: Command
+showHelp message = do
+    prefix <- asks configCommandPrefix
+    let helpText =
+            "Commands (prefix with " <> prefix
+                <> ")\n-----------------------------\n"
+                <> intercalate
+                    "\n"
+                    ( map
+                        ( \(p, _) -> case p of
+                            Command{..} ->
+                                "**" <> commandName <> "** - " <> commandHelpText
+                            _ -> ""
+                        )
+                        commands
+                    )
+    createMessage (D.messageChannel message) helpText
+
 infixl 6 |||
-(|||) :: CommandPredicate -> CommandPredicate -> CommandPredicate
+(|||) :: Predicate -> Predicate -> Predicate
 (pred1 ||| pred2) message = do
     p1 <- pred1 message
     p2 <- pred2 message
     pure $ p1 || p2
 
-isCommand :: Text -> CommandPredicate
+isCommand :: Text -> Predicate
 isCommand command message =
     if fromBot message
         then pure False
@@ -472,17 +550,17 @@ isCommand command message =
                 )
                 message
 
-messageStartsWith :: Text -> CommandPredicate
+messageStartsWith :: Text -> Predicate
 messageStartsWith text =
     pure
         . (text `T.isPrefixOf`)
         . T.toLower
         . D.messageText
 
-messageEquals :: Text -> CommandPredicate
+messageEquals :: Text -> Predicate
 messageEquals text = pure . (text ==) . T.toLower . D.messageText
 
-messageContains :: Text -> CommandPredicate
+messageContains :: Text -> Predicate
 messageContains text = pure . (text `T.isInfixOf`) . T.toLower . D.messageText
 
 simpleReply :: Text -> Command
