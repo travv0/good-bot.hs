@@ -215,67 +215,59 @@ ready dbRef = do
 
 type CommandFunc = D.Message -> App ()
 type Predicate = D.Message -> App Bool
-data Command = Command {commandName :: Text, commandHelpText :: Text}
+data Command = Command
+    { commandName :: Text
+    , commandHelpText :: Text
+    , commandFunc :: CommandFunc
+    }
 
-commands :: [(Command, CommandFunc)]
+commands :: [Command]
 commands =
-    [
-        ( Command{commandName = "rr", commandHelpText = "Play Russian Roulette!"}
-        , russianRoulette
-        )
-    ,
-        ( Command
-            { commandName = "define"
-            , commandHelpText = "Look up the definition of a word or phrase."
-            }
-        , define
-        )
-    ,
-        ( Command
-            { commandName = "add"
-            , commandHelpText = "Add a response to be randomly selected when the bot replies after being pinged."
-            }
-        , addResponse
-        )
-    ,
-        ( Command
-            { commandName = "remove"
-            , commandHelpText = "Remove a response from the bot's response pool."
-            }
-        , removeResponse
-        )
-    ,
-        ( Command
-            { commandName = "list"
-            , commandHelpText = "List all responses in the response pool."
-            }
-        , listResponses
-        )
-    ,
-        ( Command
-            { commandName = "playing"
-            , commandHelpText = "Set bot's activity to Playing."
-            }
-        , setActivity D.ActivityTypeGame
-        )
-    ,
-        ( Command
-            { commandName = "listeningto"
-            , commandHelpText = "Set bot's activity to Listening To."
-            }
-        , setActivity D.ActivityTypeListening
-        )
-    ,
-        ( Command
-            { commandName = "watching"
-            , commandHelpText = "Set bot's activity to Watching."
-            }
-        , setActivity D.ActivityTypeWatching
-        )
-    ,
-        ( Command{commandName = "help", commandHelpText = "Show this help."}
-        , showHelp
-        )
+    [ Command
+        { commandName = "rr"
+        , commandHelpText = "Play Russian Roulette!"
+        , commandFunc = russianRoulette
+        }
+    , Command
+        { commandName = "define"
+        , commandHelpText = "Look up the definition of a word or phrase."
+        , commandFunc = define
+        }
+    , Command
+        { commandName = "add"
+        , commandHelpText = "Add a response to be randomly selected when the bot replies after being pinged."
+        , commandFunc = addResponse
+        }
+    , Command
+        { commandName = "remove"
+        , commandHelpText = "Remove a response from the bot's response pool."
+        , commandFunc = removeResponse
+        }
+    , Command
+        { commandName = "list"
+        , commandHelpText = "List all responses in the response pool."
+        , commandFunc = listResponses
+        }
+    , Command
+        { commandName = "playing"
+        , commandHelpText = "Set bot's activity to Playing."
+        , commandFunc = setActivity D.ActivityTypeGame
+        }
+    , Command
+        { commandName = "listeningto"
+        , commandHelpText = "Set bot's activity to Listening To."
+        , commandFunc = setActivity D.ActivityTypeListening
+        }
+    , Command
+        { commandName = "watching"
+        , commandHelpText = "Set bot's activity to Watching."
+        , commandFunc = setActivity D.ActivityTypeWatching
+        }
+    , Command
+        { commandName = "help"
+        , commandHelpText = "Show this help."
+        , commandFunc = showHelp
+        }
     ]
 
 predicates :: [(Predicate, CommandFunc)]
@@ -297,10 +289,10 @@ messageCreate message = do
         else do
             commandMatches <-
                 filterM
-                    (\(Command{commandName = c}, _) -> isCommand c message)
+                    (\Command{..} -> isCommand commandName message)
                     commands
             case commandMatches of
-                ((_, cmd) : _) -> cmd message
+                (Command{..} : _) -> commandFunc message
                 _ -> do
                     predicateMatches <-
                         filterM
@@ -528,7 +520,7 @@ showHelp message = do
                 <> intercalate
                     "\n"
                     ( map
-                        ( \(Command{..}, _) ->
+                        ( \Command{..} ->
                             "**" <> commandName <> "** - " <> commandHelpText
                         )
                         commands
