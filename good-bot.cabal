@@ -1,0 +1,55 @@
+cabal-version: 1.12
+
+name:           good-bot
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/githubuser/good-bot#readme>
+homepage:       https://github.com/travv0/good-bot#readme
+bug-reports:    https://github.com/travv0/good-bot/issues
+author:         Travis
+maintainer:     tssund93@gmail.com
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    ChangeLog.md
+
+source-repository head
+  type: git
+  location: https://github.com/travv0/good-bot
+
+library
+  exposed-modules:
+      Lib
+  other-modules:
+      Paths_good_bot
+  hs-source-dirs:
+      src
+  ghc-options: -Wall
+  build-depends:
+      base >=4.7 && <5
+    , aeson
+    , bytestring
+    , discord-haskell
+    , exceptions
+    , lens
+    , mtl
+    , random
+    , stm
+    , text
+    , time
+    , wreq
+    , yaml
+  default-language: Haskell2010
+
+executable good-bot
+  main-is: Main.hs
+  other-modules:
+      Paths_good_bot
+  hs-source-dirs:
+      app
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N -Wall
+  build-depends:
+      base >=4.7 && <5
+    , good-bot
+  default-language: Haskell2010

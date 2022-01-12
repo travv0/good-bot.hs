@@ -1,8 +1,8 @@
 .stack-work/
-good-bot.cabal
 *~
 run.sh
 config.yaml
 responses
 test-*
 db
+dist*

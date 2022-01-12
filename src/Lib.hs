@@ -3,7 +3,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Lib (goodbot) where
 
@@ -35,7 +34,7 @@ import Data.Aeson (
     (.:),
  )
 import qualified Data.ByteString.Lazy as BSL
-import Data.Char (isAlpha, isSpace, toLower)
+import Data.Char (isSpace, toLower)
 import Data.List (delete, nub, stripPrefix)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text, intercalate)
@@ -65,7 +64,7 @@ import Network.Wreq (
  )
 import qualified Network.Wreq as W
 import System.Environment (getArgs)
-import System.Random (Random (randomIO))
+import System.Random (randomIO)
 import Text.Read (readMaybe)
 
 type App a = ReaderT Config D.DiscordHandler a
@@ -73,24 +72,12 @@ type App a = ReaderT Config D.DiscordHandler a
 data Db = Db
     { dbResponses :: [Text]
     , dbActivity :: Maybe (D.ActivityType, Text)
+    , dbMeanness :: Int
     }
     deriving (Show, Read)
 
-instance Read D.ActivityType where
-    readsPrec _ s =
-        let (at, rest) = span isAlpha s
-            parsed = case at of
-                "ActivityTypeGame" -> Just D.ActivityTypeGame
-                "ActivityTypeWatching" -> Just D.ActivityTypeWatching
-                "ActivityTypeListening" -> Just D.ActivityTypeListening
-                "ActivityTypeStreaming" -> Just D.ActivityTypeStreaming
-                _ -> Nothing
-         in case parsed of
-                Just a -> [(a, rest)]
-                Nothing -> []
-
 defaultDb :: Db
-defaultDb = Db{dbResponses = ["hi"], dbActivity = Nothing}
+defaultDb = Db{dbResponses = ["hi"], dbActivity = Nothing, dbMeanness = 5}
 
 data Config = Config
     { configDictKey :: Maybe Text
@@ -259,9 +246,14 @@ commands =
         , commandFunc = setActivity D.ActivityTypeListening
         }
     , Command
-        { commandName = "watching"
-        , commandHelpText = "Set bot's activity to Watching."
-        , commandFunc = setActivity D.ActivityTypeWatching
+        { commandName = "competingin"
+        , commandHelpText = "Set bot's activity to Competing In."
+        , commandFunc = setActivity D.ActivityTypeCompeting
+        }
+    , Command
+        { commandName = "meanness"
+        , commandHelpText = "Set bot's meanness from 0-10."
+        , commandFunc = setMeanness
         }
     , Command
         { commandName = "help"
@@ -305,7 +297,9 @@ messageCreate message = do
 isSelf :: Predicate
 isSelf message = do
     cache <- lift D.readCache
-    pure $ D.userId (D._currentUser cache) == D.userId (D.messageAuthor message)
+    pure $
+        D.userId (D.cacheCurrentUser cache)
+            == D.userId (D.messageAuthor message)
 
 isUser :: D.UserId -> Predicate
 isUser userId message = pure $ D.userId (D.messageAuthor message) == userId
@@ -315,9 +309,14 @@ isCarl = isUser 235148962103951360
 
 typingStart :: D.TypingInfo -> App ()
 typingStart (D.TypingInfo userId channelId _utcTime) = do
-    shouldReply <- liftIO $ (== 0) . (`mod` 1000) <$> (randomIO :: IO Int)
-    when shouldReply $
-        createMessage channelId $ T.pack $ "shut up <@" <> show userId <> ">"
+    db <- asks configDb
+    meanness <- liftIO $ dbMeanness <$> readTVarIO db
+    when (meanness > 0) $ do
+        shouldReply <-
+            liftIO $
+                (== 0) . (`mod` (2000 `div` meanness)) <$> (randomIO :: IO Int)
+        when shouldReply $
+            createMessage channelId $ T.pack $ "shut up <@" <> show userId <> ">"
 
 restCall :: (FromJSON a, D.Request (r a)) => r a -> App ()
 restCall request = do
@@ -501,7 +500,7 @@ mentionsMe :: Predicate
 mentionsMe message = do
     cache <- lift D.readCache
     pure $
-        D.userId (D._currentUser cache)
+        D.userId (D.cacheCurrentUser cache)
             `elem` map D.userId (D.messageMentions message)
 
 respond :: CommandFunc
@@ -560,9 +559,7 @@ messageContains text = pure . (text `T.isInfixOf`) . T.toLower . D.messageText
 
 simpleReply :: Text -> CommandFunc
 simpleReply replyText message =
-    createMessage
-        (D.messageChannel message)
-        replyText
+    createMessage (D.messageChannel message) replyText
 
 addResponse :: CommandFunc
 addResponse message = do
@@ -655,4 +652,23 @@ setActivity activityType message = do
         D.ActivityTypeGame -> "Playing"
         D.ActivityTypeListening -> "Listening to"
         D.ActivityTypeStreaming -> "Streaming"
-        D.ActivityTypeWatching -> "Watching"
+        D.ActivityTypeCompeting -> "Competing in"
+
+setMeanness :: CommandFunc
+setMeanness message = do
+    postCommand <- stripCommand message
+    case readMaybe . T.unpack <$> postCommand of
+        Nothing -> createMessage (D.messageChannel message) "Missing meanness"
+        Just Nothing ->
+            createMessage (D.messageChannel message) "Invalid meanness"
+        Just (Just m) -> do
+            let meanness = min 10 . max 0 $ m
+            dbRef <- asks configDb
+            dbFileName <- asks configDbFile
+            db <- liftIO $
+                atomically $ do
+                    modifyTVar' dbRef (\d -> d{dbMeanness = meanness})
+                    readTVar dbRef
+            liftIO $ writeFile dbFileName $ show db
+            createMessage (D.messageChannel message) $
+                "Set meanness to **" <> T.pack (show meanness) <> "**"
