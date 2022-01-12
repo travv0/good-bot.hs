@@ -487,8 +487,7 @@ mentionsMe message = do
 
 respond :: CommandFunc
 respond message = do
-    db          <- asks configDb
-    responses   <- liftIO $ dbResponses <$> readTVarIO db
+    responses   <- getResponses
     responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
     createMessage (D.messageChannel message) $ responses !! responseNum
 
@@ -547,18 +546,16 @@ addResponse message = do
         Nothing ->
             createMessage (D.messageChannel message) "Missing response to add"
         Just response -> do
-            dbRef      <- asks configDb
-            dbFileName <- asks configDbFile
-            db         <- liftIO $ atomically $ do
-                modifyTVar'
-                    dbRef
-                    (\d -> d { dbResponses = nub $ response : dbResponses d })
-                readTVar dbRef
-            liftIO $ writeFile dbFileName $ show db
+            updateDb (\d -> d { dbResponses = nub $ response : dbResponses d })
             createMessage (D.messageChannel message)
                 $  "Added **"
                 <> response
                 <> "** to responses"
+
+getResponses :: App [Text]
+getResponses = do
+    dbRef <- asks configDb
+    liftIO $ dbResponses <$> readTVarIO dbRef
 
 removeResponse :: CommandFunc
 removeResponse message = do
@@ -567,20 +564,13 @@ removeResponse message = do
         Nothing -> createMessage (D.messageChannel message)
                                  "Missing response to remove"
         Just response -> do
-            dbRef        <- asks configDb
-            dbFileName   <- asks configDbFile
-            oldResponses <- liftIO $ dbResponses <$> readTVarIO dbRef
+            oldResponses <- getResponses
             if response `elem` oldResponses
                 then do
-                    db <- liftIO $ atomically $ do
-                        modifyTVar'
-                            dbRef
-                            (\d -> d
-                                { dbResponses = delete response $ dbResponses d
-                                }
-                            )
-                        readTVar dbRef
-                    liftIO $ writeFile dbFileName $ show db
+                    updateDb
+                        (\d -> d { dbResponses = delete response $ dbResponses d
+                                 }
+                        )
                     createMessage (D.messageChannel message)
                         $  "Removed **"
                         <> response
@@ -593,36 +583,26 @@ removeResponse message = do
 
 listResponses :: CommandFunc
 listResponses message = do
-    dbRef     <- asks configDb
-    responses <- liftIO $ intercalate "\n" . dbResponses <$> readTVarIO dbRef
+    responses <- intercalate "\n" <$> getResponses
     createMessage (D.messageChannel message) responses
 
 setActivity :: D.ActivityType -> CommandFunc
 setActivity activityType message = do
-    dbRef       <- asks configDb
-    dbFileName  <- asks configDbFile
     postCommand <- stripCommand message
     case postCommand of
         Nothing -> do
             lift $ updateStatus activityType Nothing
-            liftIO $ atomically $ modifyTVar'
-                dbRef
-                (\d -> d { dbActivity = Nothing })
+            updateDb (\d -> d { dbActivity = Nothing })
             createMessage (D.messageChannel message) "Removed status"
         Just status -> do
             lift $ updateStatus activityType $ Just status
-            liftIO $ atomically $ modifyTVar'
-                dbRef
-                (\d -> d { dbActivity = Just (activityType, status) })
+            updateDb (\d -> d { dbActivity = Just (activityType, status) })
             createMessage (D.messageChannel message)
                 $  "Updated status to **"
                 <> activityTypeText
                 <> " "
                 <> status
                 <> "**"
-    liftIO $ do
-        db <- readTVarIO dbRef
-        writeFile dbFileName $ show db
   where
     activityTypeText = case activityType of
         D.ActivityTypeGame      -> "Playing"
@@ -639,13 +619,17 @@ setMeanness message = do
             createMessage (D.messageChannel message) "Invalid meanness"
         Just (Just m) -> do
             let meanness = min 10 . max 0 $ m
-            dbRef      <- asks configDb
-            dbFileName <- asks configDbFile
-            db         <- liftIO $ atomically $ do
-                modifyTVar' dbRef (\d -> d { dbMeanness = meanness })
-                readTVar dbRef
-            liftIO $ writeFile dbFileName $ show db
+            updateDb (\d -> d { dbMeanness = meanness })
             createMessage (D.messageChannel message)
                 $  "Set meanness to **"
                 <> T.pack (show meanness)
                 <> "**"
+
+updateDb :: (Db -> Db) -> App ()
+updateDb f = do
+    dbRef      <- asks configDb
+    dbFileName <- asks configDbFile
+    db         <- liftIO $ atomically $ do
+        modifyTVar' dbRef f
+        readTVar dbRef
+    liftIO $ writeFile dbFileName $ show db
