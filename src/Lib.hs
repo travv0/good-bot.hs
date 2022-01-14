@@ -309,7 +309,7 @@ typingStart (D.TypingInfo userId channelId _utcTime) = do
             .   (`mod` (5000 `div` meanness))
             <$> (randomIO :: IO Int)
         when shouldReply
-            $  createMessage channelId
+            $  createMessage channelId Nothing
             $  T.pack
             $  "shut up <@"
             <> show userId
@@ -322,10 +322,23 @@ restCall request = do
         Right _   -> pure ()
         Left  err -> liftIO $ logError $ T.pack $ show err
 
-createMessage :: D.ChannelId -> Text -> App ()
-createMessage channelId message =
+replyTo :: D.Message -> Text -> App ()
+replyTo replyingTo =
+    createMessage (D.messageChannel replyingTo) (Just $ D.messageId replyingTo)
+
+createMessage :: D.ChannelId -> Maybe D.MessageId -> Text -> App ()
+createMessage channelId replyingToId message =
     let chunks = T.chunksOf 2000 message
-    in  forM_ chunks $ \chunk -> restCall $ D.CreateMessage channelId chunk
+    in
+        forM_ chunks $ \chunk -> restCall $ D.CreateMessageDetailed
+            channelId
+            D.def
+                { D.messageDetailedContent   = chunk
+                , D.messageDetailedReference = Just D.def
+                                                   { D.referenceMessageId =
+                                                       replyingToId
+                                                   }
+                }
 
 createGuildBan :: D.GuildId -> D.UserId -> Text -> App ()
 createGuildBan guildId userId banMessage = restCall $ D.CreateGuildBan
@@ -341,10 +354,10 @@ russianRoulette message = do
     chamber <- liftIO $ (`mod` 6) <$> (randomIO :: IO Int)
     case (chamber, D.messageGuild message) of
         (0, Just gId) -> do
-            createMessage (D.messageChannel message) response
+            replyTo message response
             createGuildBan gId (D.userId $ D.messageAuthor message) response
             where response = "Bang!"
-        _ -> createMessage (D.messageChannel message) "Click."
+        _ -> replyTo message "Click."
 
 data Definition = Definition
     { defPartOfSpeech :: Maybe Text
@@ -376,14 +389,13 @@ define :: (Text -> App (Maybe Text)) -> D.Message -> App ()
 define getOutput message = do
     msg <- stripCommand message
     case msg of
-        Nothing -> createMessage (D.messageChannel message)
-                                 "Missing word/phrase to define"
+        Nothing     -> replyTo message "Missing word/phrase to define"
         Just phrase -> do
             moutput <- getOutput phrase
             case moutput of
-                Just output -> createMessage (D.messageChannel message) output
+                Just output -> replyTo message output
                 Nothing ->
-                    createMessage (D.messageChannel message)
+                    replyTo message
                         $  "No definition found for **"
                         <> phrase
                         <> "**"
@@ -500,7 +512,7 @@ respond :: CommandFunc
 respond message = do
     responses   <- getResponses
     responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
-    createMessage (D.messageChannel message) $ responses !! responseNum
+    replyTo message $ responses !! responseNum
 
 showHelp :: CommandFunc
 showHelp message = do
@@ -517,7 +529,7 @@ showHelp message = do
                            )
                            commands
                        )
-    createMessage (D.messageChannel message) helpText
+    replyTo message helpText
 
 infixl 6 |||
 (|||) :: Predicate -> Predicate -> Predicate
@@ -547,21 +559,16 @@ messageContains :: Text -> Predicate
 messageContains text = pure . (text `T.isInfixOf`) . T.toLower . D.messageText
 
 simpleReply :: Text -> CommandFunc
-simpleReply replyText message =
-    createMessage (D.messageChannel message) replyText
+simpleReply replyText message = replyTo message replyText
 
 addResponse :: CommandFunc
 addResponse message = do
     postCommand <- stripCommand message
     case postCommand of
-        Nothing ->
-            createMessage (D.messageChannel message) "Missing response to add"
+        Nothing       -> replyTo message "Missing response to add"
         Just response -> do
             updateDb (\d -> d { dbResponses = nub $ response : dbResponses d })
-            createMessage (D.messageChannel message)
-                $  "Added **"
-                <> response
-                <> "** to responses"
+            replyTo message $ "Added **" <> response <> "** to responses"
 
 getResponses :: App [Text]
 getResponses = do
@@ -572,8 +579,7 @@ removeResponse :: CommandFunc
 removeResponse message = do
     postCommand <- stripCommand message
     case postCommand of
-        Nothing -> createMessage (D.messageChannel message)
-                                 "Missing response to remove"
+        Nothing       -> replyTo message "Missing response to remove"
         Just response -> do
             oldResponses <- getResponses
             if response `elem` oldResponses
@@ -582,12 +588,12 @@ removeResponse message = do
                         (\d -> d { dbResponses = delete response $ dbResponses d
                                  }
                         )
-                    createMessage (D.messageChannel message)
+                    replyTo message
                         $  "Removed **"
                         <> response
                         <> "** from responses"
                 else
-                    createMessage (D.messageChannel message)
+                    replyTo message
                     $  "Response **"
                     <> response
                     <> "** not found"
@@ -595,7 +601,7 @@ removeResponse message = do
 listResponses :: CommandFunc
 listResponses message = do
     responses <- intercalate "\n" <$> getResponses
-    createMessage (D.messageChannel message) responses
+    replyTo message responses
 
 setActivity :: D.ActivityType -> CommandFunc
 setActivity activityType message = do
@@ -604,11 +610,11 @@ setActivity activityType message = do
         Nothing -> do
             lift $ updateStatus activityType Nothing
             updateDb (\d -> d { dbActivity = Nothing })
-            createMessage (D.messageChannel message) "Removed status"
+            replyTo message "Removed status"
         Just status -> do
             lift $ updateStatus activityType $ Just status
             updateDb (\d -> d { dbActivity = Just (activityType, status) })
-            createMessage (D.messageChannel message)
+            replyTo message
                 $  "Updated status to **"
                 <> activityTypeText
                 <> " "
@@ -625,13 +631,12 @@ setMeanness :: CommandFunc
 setMeanness message = do
     postCommand <- stripCommand message
     case readMaybe . T.unpack <$> postCommand of
-        Nothing -> createMessage (D.messageChannel message) "Missing meanness"
-        Just Nothing ->
-            createMessage (D.messageChannel message) "Invalid meanness"
+        Nothing       -> replyTo message "Missing meanness"
+        Just Nothing  -> replyTo message "Invalid meanness"
         Just (Just m) -> do
             let meanness = min 10 . max 0 $ m
             updateDb (\d -> d { dbMeanness = meanness })
-            createMessage (D.messageChannel message)
+            replyTo message
                 $  "Set meanness to **"
                 <> T.pack (show meanness)
                 <> "**"
