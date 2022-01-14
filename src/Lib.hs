@@ -211,10 +211,18 @@ commands =
               , commandHelpText = "Play Russian Roulette!"
               , commandFunc     = russianRoulette
               }
-    , Command { commandName     = "define"
-              , commandHelpText = "Look up the definition of a word or phrase."
-              , commandFunc     = define
-              }
+    , Command
+        { commandName     = "define"
+        , commandHelpText =
+            "Look up the definition of a word or phrase, using Urban Dictionary as a backup."
+        , commandFunc     = define getDefineOutput
+        }
+    , Command
+        { commandName     = "urban"
+        , commandHelpText =
+            "Look up the definition of a word or phrase in Urban Dictionary."
+        , commandFunc     = define getUrbanOutput
+        }
     , Command
         { commandName     = "add"
         , commandHelpText =
@@ -298,7 +306,7 @@ typingStart (D.TypingInfo userId channelId _utcTime) = do
         shouldReply <-
             liftIO
             $   (== 0)
-            .   (`mod` (2000 `div` meanness))
+            .   (`mod` (5000 `div` meanness))
             <$> (randomIO :: IO Int)
         when shouldReply
             $  createMessage channelId
@@ -364,14 +372,14 @@ stripCommand message = do
                     "" -> return Nothing
                     m  -> return $ Just m
 
-define :: CommandFunc
-define message = do
+define :: (Text -> App (Maybe Text)) -> D.Message -> App ()
+define getOutput message = do
     msg <- stripCommand message
     case msg of
         Nothing -> createMessage (D.messageChannel message)
                                  "Missing word/phrase to define"
         Just phrase -> do
-            moutput <- getDefineOutput phrase
+            moutput <- getOutput phrase
             case moutput of
                 Just output -> createMessage (D.messageChannel message) output
                 Nothing ->
@@ -405,12 +413,15 @@ getDefineOutput word = do
             word
             (response >>= eitherDecode . view responseBody)
         $ Just
-        $ do
-              urbanResponse <- getUrbanResponse word
-              buildDefineOutputHandleFail
-                  word
-                  (urbanResponse >>= decodeUrban . view responseBody)
-                  Nothing
+        $ getUrbanOutput word
+
+getUrbanOutput :: Text -> App (Maybe Text)
+getUrbanOutput word = do
+    urbanResponse <- getUrbanResponse word
+    buildDefineOutputHandleFail
+        word
+        (urbanResponse >>= decodeUrban . view responseBody)
+        Nothing
 
 buildDefineOutputHandleFail
     :: Text
