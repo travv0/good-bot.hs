@@ -250,10 +250,12 @@ commands =
               , commandHelpText = "Set bot's activity to Competing In."
               , commandFunc     = setActivity D.ActivityTypeCompeting
               }
-    , Command { commandName     = "meanness"
-              , commandHelpText = "Set bot's meanness from 0-10."
-              , commandFunc     = setMeanness
-              }
+    , Command
+        { commandName     = "meanness"
+        , commandHelpText =
+            "Set bot's meanness from 0-10 or display current meanness if no argument given."
+        , commandFunc     = setMeanness
+        }
     , Command { commandName     = "help"
               , commandHelpText = "Show this help."
               , commandFunc     = showHelp
@@ -634,7 +636,13 @@ setMeanness :: CommandFunc
 setMeanness message = do
     postCommand <- stripCommand message
     case readMaybe . T.unpack <$> postCommand of
-        Nothing       -> replyTo message "Missing meanness"
+        Nothing -> do
+            dbRef    <- asks configDb
+            meanness <- liftIO $ dbMeanness <$> readTVarIO dbRef
+            replyTo message
+                $  "Current meanness is **"
+                <> T.pack (show meanness)
+                <> "**"
         Just Nothing  -> replyTo message "Invalid meanness"
         Just (Just m) -> do
             let meanness = min 10 . max 0 $ m
