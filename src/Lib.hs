@@ -333,11 +333,14 @@ createMessage channelId replyingToId message =
         forM_ chunks $ \chunk -> restCall $ D.CreateMessageDetailed
             channelId
             D.def
-                { D.messageDetailedContent   = chunk
-                , D.messageDetailedReference = Just D.def
-                                                   { D.referenceMessageId =
-                                                       replyingToId
-                                                   }
+                { D.messageDetailedContent         = chunk
+                , D.messageDetailedAllowedMentions = Just D.def
+                    { D.mentionRepliedUser = False
+                    }
+                , D.messageDetailedReference       = Just D.def
+                                                         { D.referenceMessageId =
+                                                             replyingToId
+                                                         }
                 }
 
 createGuildBan :: D.GuildId -> D.UserId -> Text -> App ()
