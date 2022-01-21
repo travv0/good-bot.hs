@@ -29,7 +29,6 @@ import           Control.Monad.Catch            ( catchAll
 import           Control.Monad.Reader           ( MonadTrans(lift)
                                                 , ReaderT(runReaderT)
                                                 , asks
-                                                , forM_
                                                 , liftIO
                                                 )
 import           Data.Aeson                     ( (.:)
@@ -45,7 +44,9 @@ import           Data.Char                      ( isSpace
                                                 , toLower
                                                 )
 import qualified Data.Char                     as Char
-import           Data.Foldable                  ( find )
+import           Data.Foldable                  ( find
+                                                , for_
+                                                )
 import           Data.List                      ( delete
                                                 , nub
                                                 , stripPrefix
@@ -148,7 +149,7 @@ goodbot = do
     config@UserConfig {..} <- either (error . show) id
         <$> decodeFileEither configFile
     dbStr <- (Just <$> readFile (fromMaybe defaultDbFile userConfigDbFile))
-        `catchIOError` \_ -> return Nothing
+        `catchIOError` \_ -> pure Nothing
     let db = fromMaybe defaultDb $ dbStr >>= readMaybe
     dbRef           <- newTVarIO db
     userFacingError <-
@@ -159,7 +160,7 @@ goodbot = do
                        , D.discordOnLog   = logText
                        }
                 )
-            `catchAll` \e -> return $ T.pack $ show e
+            `catchAll` \e -> pure $ T.pack $ show e
     T.putStrLn userFacingError
 
 onStart :: UserConfig -> D.DiscordHandler ()
@@ -355,7 +356,7 @@ createMessage :: D.ChannelId -> Maybe D.MessageId -> Text -> App ()
 createMessage channelId replyingToId message =
     let chunks = T.chunksOf 2000 message
     in
-        forM_ chunks $ \chunk -> restCall $ D.CreateMessageDetailed
+        for_ chunks $ \chunk -> restCall $ D.CreateMessageDetailed
             channelId
             D.def
                 { D.messageDetailedContent         = chunk
@@ -404,13 +405,13 @@ stripCommand :: D.Message -> App (Maybe Text)
 stripCommand message = do
     prefix <- asks configCommandPrefix
     case T.stripPrefix prefix $ D.messageText message of
-        Nothing -> return Nothing
+        Nothing -> pure Nothing
         Just withoutPrefix ->
             let withoutCommand = T.dropWhile isSpace
                     $ T.dropWhile (not . isSpace) withoutPrefix
             in  case withoutCommand of
-                    "" -> return Nothing
-                    m  -> return $ Just m
+                    "" -> pure Nothing
+                    m  -> pure $ Just m
 
 define :: (Text -> App (Maybe Text)) -> D.Message -> App ()
 define getOutput message = do
