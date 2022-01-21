@@ -31,7 +31,6 @@ library
     , aeson
     , bytestring
     , discord-haskell
-    , either
     , exceptions
     , lens
     , mtl
