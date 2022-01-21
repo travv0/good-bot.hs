@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module Lib
     ( goodbot
@@ -43,6 +44,8 @@ import qualified Data.ByteString.Lazy          as BSL
 import           Data.Char                      ( isSpace
                                                 , toLower
                                                 )
+import qualified Data.Char                     as Char
+import           Data.Foldable                  ( find )
 import           Data.List                      ( delete
                                                 , nub
                                                 , stripPrefix
@@ -201,6 +204,7 @@ type CommandFunc = D.Message -> App ()
 type Predicate = D.Message -> App Bool
 data Command = Command
     { commandName     :: Text
+    , commandArgInfo  :: Maybe (String, String)
     , commandHelpText :: Text
     , commandFunc     :: CommandFunc
     }
@@ -209,57 +213,73 @@ commands :: [Command]
 commands =
     [ Command { commandName     = "rr"
               , commandHelpText = "Play Russian Roulette!"
+              , commandArgInfo  = Nothing
               , commandFunc     = russianRoulette
               }
     , Command
         { commandName     = "define"
         , commandHelpText =
             "Look up the definition of a word or phrase, using Urban Dictionary as a backup."
+        , commandArgInfo  = Just ("term", "The world or phrase to look up.")
         , commandFunc     = define getDefineOutput
         }
     , Command
         { commandName     = "urban"
         , commandHelpText =
-            "Look up the definition of a word or phrase in Urban Dictionary."
+            "Look up the definition of a word or phrase on Urban Dictionary."
+        , commandArgInfo  = Just ("term", "The world or phrase to look up.")
         , commandFunc     = define getUrbanOutput
         }
     , Command
         { commandName     = "add"
         , commandHelpText =
             "Add a response to be randomly selected when the bot replies after being pinged."
+        , commandArgInfo  = Just ("response", "The response to add.")
         , commandFunc     = addResponse
         }
     , Command
         { commandName     = "remove"
         , commandHelpText = "Remove a response from the bot's response pool."
+        , commandArgInfo  = Just ("response", "The response to remove.")
         , commandFunc     = removeResponse
         }
     , Command { commandName     = "list"
               , commandHelpText = "List all responses in the response pool."
+              , commandArgInfo  = Nothing
               , commandFunc     = listResponses
               }
     , Command { commandName     = "playing"
               , commandHelpText = "Set bot's activity to Playing."
+              , commandArgInfo  = Just ("name", "What's the bot playing?")
               , commandFunc     = setActivity D.ActivityTypeGame
               }
     , Command { commandName     = "listeningto"
               , commandHelpText = "Set bot's activity to Listening To."
+              , commandArgInfo  = Just ("name", "What's the bot listening to?")
               , commandFunc     = setActivity D.ActivityTypeListening
               }
     , Command { commandName     = "competingin"
               , commandHelpText = "Set bot's activity to Competing In."
+              , commandArgInfo  = Just ("name", "What's the bot watching?")
               , commandFunc     = setActivity D.ActivityTypeCompeting
               }
     , Command
         { commandName     = "meanness"
         , commandHelpText =
             "Set bot's meanness from 0-10 or display current meanness if no argument given."
+        , commandArgInfo  = Just
+            ( "level"
+            , "The number between 0 and 10 to set the bot's meanness to. Higher is meaner. Leave blank to view current meanness."
+            )
         , commandFunc     = setMeanness
         }
-    , Command { commandName     = "help"
-              , commandHelpText = "Show this help."
-              , commandFunc     = showHelp
-              }
+    , Command
+        { commandName     = "help"
+        , commandHelpText =
+            "Show this help or show detailed help for a given command."
+        , commandArgInfo  = Just ("command", "Command to show help for.")
+        , commandFunc     = showHelp
+        }
     ]
 
 predicates :: [(Predicate, CommandFunc)]
@@ -308,7 +328,7 @@ typingStart (D.TypingInfo userId channelId _utcTime) = do
         shouldReply <-
             liftIO
             $   (== 0)
-            .   (`mod` (5000 `div` meanness))
+            .   (`mod` meannessRatio meanness)
             <$> (randomIO :: IO Int)
         when shouldReply
             $  createMessage channelId Nothing
@@ -316,6 +336,9 @@ typingStart (D.TypingInfo userId channelId _utcTime) = do
             $  "shut up <@"
             <> show userId
             <> ">"
+  where
+    meannessRatio 11 = 1
+    meannessRatio n  = 2000 `div` n
 
 restCall :: (FromJSON a, D.Request (r a)) => r a -> App ()
 restCall request = do
@@ -339,10 +362,9 @@ createMessage channelId replyingToId message =
                 , D.messageDetailedAllowedMentions = Just D.def
                     { D.mentionRepliedUser = False
                     }
-                , D.messageDetailedReference       = Just D.def
-                                                         { D.referenceMessageId =
-                                                             replyingToId
-                                                         }
+                , D.messageDetailedReference       = fmap
+                    (\mId -> D.def { D.referenceMessageId = Just mId })
+                    replyingToId
                 }
 
 createGuildBan :: D.GuildId -> D.UserId -> Text -> App ()
@@ -521,19 +543,54 @@ respond message = do
 
 showHelp :: CommandFunc
 showHelp message = do
-    prefix <- asks configCommandPrefix
-    let helpText =
-            "Commands (prefix with "
-                <> prefix
-                <> ")\n-----------------------------\n"
-                <> intercalate
-                       "\n"
-                       (map
-                           (\Command {..} ->
-                               "**" <> commandName <> "** - " <> commandHelpText
+    prefix      <- asks configCommandPrefix
+    postCommand <- stripCommand message
+    let
+        helpText = case postCommand of
+            Nothing ->
+                "```\nCommands (prefix with "
+                    <> prefix
+                    <> ")\n-----------------------------\n"
+                    <> intercalate
+                           "\n"
+                           (map
+                               (\Command {..} ->
+                                   let arg = T.pack $ case commandArgInfo of
+                                           Just (a, _) ->
+                                               " " <> map Char.toUpper a
+                                           Nothing -> ""
+                                   in  commandName
+                                           <> arg
+                                           <> " - "
+                                           <> commandHelpText
+                               )
+                               commands
                            )
-                           commands
-                       )
+                    <> "\n```"
+            Just commandStr ->
+                case find ((== commandStr) . commandName) commands of
+                    Nothing -> "Command not found: **" <> commandStr <> "**"
+                    Just Command { commandArgInfo, commandHelpText } ->
+                        "```\n"
+                            <> commandStr
+                            <> " help\n-----------------------------\n"
+                            <> commandHelpText
+                            <> "\n\nUsage: "
+                            <> commandStr
+                            <> (case commandArgInfo of
+                                   Nothing -> ""
+                                   Just (a, help) ->
+                                       let arg = map Char.toUpper a
+                                       in  T.pack
+                                               $  " "
+                                               <> arg
+                                               <> "\n\n"
+                                               <> arg
+                                               <> " - "
+                                               <> help
+                               )
+                            <> "\n```"
+
     replyTo message helpText
 
 infixl 6 |||
@@ -645,7 +702,7 @@ setMeanness message = do
                 <> "**"
         Just Nothing  -> replyTo message "Invalid meanness"
         Just (Just m) -> do
-            let meanness = min 10 . max 0 $ m
+            let meanness = min 11 . max 0 $ m
             updateDb (\d -> d { dbMeanness = meanness })
             replyTo message
                 $  "Set meanness to **"
