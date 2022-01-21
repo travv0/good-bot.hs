@@ -251,9 +251,9 @@ commandName Help        = "help"
 commandArgInfo :: Command -> CommandArgInfo
 commandArgInfo RR = []
 commandArgInfo Define =
-    [(Multi, "term", "The world or phrase to look up.", restStr)]
+    [(Multi, "term", "The word or phrase to look up.", restStr)]
 commandArgInfo Urban =
-    [(Multi, "term", "The world or phrase to look up.", restStr)]
+    [(Multi, "term", "The word or phrase to look up.", restStr)]
 commandArgInfo Add = [(Multi, "response", "The response to add.", restStr)]
 commandArgInfo Remove =
     [(Multi, "response", "The response to remove.", restStr)]
