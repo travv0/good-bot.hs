@@ -3,12 +3,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE LambdaCase #-}
 
-module Lib
-    ( goodbot
-    ) where
+module Lib where
 
 import           Control.Concurrent.STM         ( TVar
                                                 , atomically
@@ -44,8 +42,8 @@ import qualified Data.ByteString.Lazy          as BSL
 import           Data.Char                      ( isSpace
                                                 , toLower
                                                 )
+import           Data.Either.Combinators        ( mapLeft )
 import           Data.Foldable                  ( find
-                                                , foldl'
                                                 , for_
                                                 )
 import           Data.List                      ( delete
@@ -81,6 +79,8 @@ import           Network.Wreq                   ( Response
 import qualified Network.Wreq                  as W
 import           System.Environment             ( getArgs )
 import           System.Random                  ( randomIO )
+import           Text.Parsec
+import           Text.Parsec.Text               ( Parser )
 import           Text.Read                      ( readMaybe )
 
 type App a = ReaderT Config D.DiscordHandler a
@@ -202,76 +202,99 @@ ready dbRef = do
             lift $ updateStatus activityType $ Just activity
         Nothing -> pure ()
 
-data CommandArg = String Text | IntMaybe (Maybe Int)
-data ArgType = Required | Optional | Multi
-type CommandFunc = D.Message -> App ()
+data CommandArg = String Text | Int Int | Ints [Int] | Maybe (Maybe CommandArg) deriving Show
+data ArgArity = Single | Multi
+data ArgReq = Required | Optional
+type ArgType = (ArgReq, ArgArity)
+type CommandFunc = D.Message -> Either String [CommandArg] -> App ()
+type PredicateFunc = D.Message -> App ()
 type Predicate = D.Message -> App Bool
-type CommandArgInfo = [(ArgType, Text, Text, CommandParser)]
-type CommandParser = Text -> Either Text (CommandArg, Text)
+type CommandArgInfo s u = [(ArgType, Text, Text, CommandParser s u)]
+type CommandParser s u = Parser CommandArg
 
-restStr :: CommandParser
-restStr "" = Left "No remaining args"
-restStr s  = Right (String s, "")
+restStr :: CommandParser s u
+restStr = do
+    cs <- many anyChar
+    return . String $ T.pack cs
 
-intMaybe :: CommandParser
-intMaybe s = case s of
-    "" -> Right (IntMaybe Nothing, s)
-    _  -> case reads $ T.unpack s of
-        []         -> Left $ "Couldn't parse int: " <> s
-        (n, r) : _ -> Right (IntMaybe (Just n), T.pack r)
+restStr1 :: CommandParser s u
+restStr1 = do
+    cs <- many1 anyChar
+    return . String $ T.pack cs
 
-parseArgs :: Command -> D.Message -> App (Either Text [CommandArg])
+maybeP :: CommandParser s u -> CommandParser s u
+maybeP p = Maybe <$> optionMaybe p
+
+int :: CommandParser s u
+int = do
+    d <- many1 digit
+    return . Int $ read d
+
+str :: CommandParser s u
+str = do
+    cs <- many1 (satisfy (not . isSpace))
+    return . String $ T.pack cs
+
+ints :: CommandParser s u
+ints = do
+    ds <- many (spaces *> many1 digit)
+    return . Ints $ map read ds
+
+parseArgs :: Command -> D.Message -> App (Either String [CommandArg])
 parseArgs command message = do
-    msg <- stripCommand message
-    return $ reverse . fst <$> foldl'
-        (\acc (_, _, _, parse) -> case acc of
-            Right (args, text) ->
-                (case parse text of
-                    Right (arg, newText) -> Right (arg : args, newText)
-                    Left  e              -> Left e
-                )
-            e -> e
-        )
-        (Right (([], ) $ fromMaybe "" msg))
-        (commandArgInfo command)
+    stripCommand message >>= \case
+        Just msg -> return $ mapLeft show $ parse
+            (traverse (\(_, _, _, p) -> p) (commandArgInfo command))
+            ""
+            msg
+        Nothing -> return $ Left "Error stripping command"
+
+data Command =
+      RR
+    | Define
+    | Urban
+    | Add
+    | Remove
+    | List
+    | Playing
+    | ListeningTo
+    | CompetingIn
+    | Meanness
+    | Sum
+    | Help
+    deriving (Show, Eq, Enum, Bounded)
 
 commandName :: Command -> Text
-commandName RR          = "rr"
-commandName Define      = "define"
-commandName Urban       = "urban"
-commandName Add         = "add"
-commandName Remove      = "remove"
-commandName List        = "list"
-commandName Playing     = "playing"
-commandName ListeningTo = "listeningto"
-commandName CompetingIn = "competingin"
-commandName Meanness    = "meanness"
-commandName Help        = "help"
+commandName = T.toLower . T.pack . show
 
-commandArgInfo :: Command -> CommandArgInfo
+commandArgInfo :: Command -> CommandArgInfo s u
 commandArgInfo RR = []
 commandArgInfo Define =
-    [(Multi, "term", "The word or phrase to look up.", restStr)]
+    [((Required, Multi), "term", "The word or phrase to look up.", restStr1)]
 commandArgInfo Urban =
-    [(Multi, "term", "The word or phrase to look up.", restStr)]
-commandArgInfo Add = [(Multi, "response", "The response to add.", restStr)]
+    [((Required, Multi), "term", "The word or phrase to look up.", restStr1)]
+commandArgInfo Add =
+    [((Required, Multi), "response", "The response to add.", restStr1)]
 commandArgInfo Remove =
-    [(Multi, "response", "The response to remove.", restStr)]
-commandArgInfo List    = []
-commandArgInfo Playing = [(Multi, "name", "What's the bot playing?", restStr)]
+    [((Required, Multi), "response", "The response to remove.", restStr1)]
+commandArgInfo List = []
+commandArgInfo Playing =
+    [((Optional, Multi), "name", "What's the bot playing?", restStr)]
 commandArgInfo ListeningTo =
-    [(Multi, "name", "What's the bot listening to?", restStr)]
+    [((Optional, Multi), "name", "What's the bot listening to?", restStr)]
 commandArgInfo CompetingIn =
-    [(Multi, "name", "What's the bot competing in?", restStr)]
+    [((Optional, Multi), "name", "What's the bot competing in?", restStr)]
 commandArgInfo Meanness =
-    [ ( Optional
+    [ ( (Optional, Single)
       , "level"
       , "The number between 0 and 10 to set the bot's meanness to. Higher is meaner. Leave blank to view current meanness."
-      , intMaybe
+      , maybeP int
       )
     ]
+commandArgInfo Sum =
+    [((Optional, Multi), "nums", "Some integers to sum.", ints)]
 commandArgInfo Help =
-    [(Optional, "command", "Command to show help for.", restStr)]
+    [((Optional, Single), "command", "Command to show help for.", maybeP str)]
 
 commandHelpText :: Command -> Text
 commandHelpText RR = "Play Russian Roulette!"
@@ -288,6 +311,7 @@ commandHelpText ListeningTo = "Set bot's activity to Listening To."
 commandHelpText CompetingIn = "Set bot's activity to Competing In."
 commandHelpText Meanness
     = "Set bot's meanness from 0-10 or display current meanness if no argument given."
+commandHelpText Sum = "Sum some integers."
 commandHelpText Help =
     "Show this help or show detailed help for a given command."
 
@@ -302,26 +326,13 @@ commandFunc Playing     = setActivity D.ActivityTypeGame
 commandFunc ListeningTo = setActivity D.ActivityTypeListening
 commandFunc CompetingIn = setActivity D.ActivityTypeCompeting
 commandFunc Meanness    = setMeanness
+commandFunc Sum         = sumInts
 commandFunc Help        = showHelp
-
-data Command =
-      RR
-    | Define
-    | Urban
-    | Add
-    | Remove
-    | List
-    | Playing
-    | ListeningTo
-    | CompetingIn
-    | Meanness
-    | Help
-    deriving (Show, Eq, Enum, Bounded)
 
 commands :: [Command]
 commands = [minBound .. maxBound]
 
-predicates :: [(Predicate, CommandFunc)]
+predicates :: [(Predicate, PredicateFunc)]
 predicates =
     [ (isCarl, simpleReply "Carl is a cuck")
     , ( mentionsMe ||| messageContains "@everyone" ||| messageContains "@here"
@@ -339,8 +350,10 @@ messageCreate message = do
                 (\command -> isCommand (commandName command) message)
                 commands
             case commandMatches of
-                (command : _) -> commandFunc command message
-                _             -> do
+                (command : _) -> do
+                    args <- parseArgs command message
+                    commandFunc command message args
+                _ -> do
                     predicateMatches <- filterM (\(p, _) -> p message)
                                                 predicates
                     case predicateMatches of
@@ -416,7 +429,7 @@ fromBot :: D.Message -> Bool
 fromBot m = D.userIsBot (D.messageAuthor m)
 
 russianRoulette :: CommandFunc
-russianRoulette message = do
+russianRoulette message _ = do
     chamber <- liftIO $ (`mod` 6) <$> (randomIO :: IO Int)
     case (chamber, D.messageGuild message) of
         (0, Just gId) -> do
@@ -443,28 +456,20 @@ stripCommand :: D.Message -> App (Maybe Text)
 stripCommand message = do
     prefix <- asks configCommandPrefix
     case T.stripPrefix prefix $ D.messageText message of
-        Nothing -> pure Nothing
-        Just withoutPrefix ->
-            let withoutCommand = T.dropWhile isSpace
-                    $ T.dropWhile (not . isSpace) withoutPrefix
-            in  case withoutCommand of
-                    "" -> pure Nothing
-                    m  -> pure $ Just m
+        Nothing            -> pure Nothing
+        Just withoutPrefix -> pure . Just . T.dropWhile isSpace $ T.dropWhile
+            (not . isSpace)
+            withoutPrefix
 
 define :: (Text -> App (Maybe Text)) -> CommandFunc
-define getOutput message = do
-    args <- parseArgs Define message
-    case args of
-        Right [String phrase] -> do
-            moutput <- getOutput phrase
-            case moutput of
-                Just output -> replyTo message output
-                Nothing ->
-                    replyTo message
-                        $  "No definition found for **"
-                        <> phrase
-                        <> "**"
-        _ -> replyTo message "Missing word/phrase to define"
+define getOutput message = \case
+    Right [String phrase] -> do
+        moutput <- getOutput phrase
+        case moutput of
+            Just output -> replyTo message output
+            Nothing ->
+                replyTo message $ "No definition found for **" <> phrase <> "**"
+    _ -> replyTo message "Missing word/phrase to define"
 
 buildDefineOutput :: Text -> Definition -> Text
 buildDefineOutput word definition =
@@ -574,19 +579,18 @@ mentionsMe message = do
         D.userId
         (D.messageMentions message)
 
-respond :: CommandFunc
+respond :: PredicateFunc
 respond message = do
     responses   <- getResponses
     responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
     replyTo message $ responses !! responseNum
 
 showHelp :: CommandFunc
-showHelp message = do
+showHelp message args = do
     prefix <- asks configCommandPrefix
-    args   <- parseArgs Help message
     let
         helpText = case args of
-            Right [String commandStr] ->
+            Right [Maybe (Just (String commandStr))] ->
                 case find ((== commandStr) . commandName) commands of
                     Nothing -> "Command not found: **" <> commandStr <> "**"
                     Just command ->
@@ -634,12 +638,13 @@ showHelp message = do
     replyTo message helpText
   where
     argStr = mconcat . map (\(t, a, _, _) -> " " <> modifyArg t (T.toUpper a))
-    modifyArg typ arg = case typ of
-        Required -> arg
-        Optional -> "[" <> arg <> "]"
-        Multi    -> arg <> "..."
-
-
+    modifyArg (r, s) arg =
+        let arg1 = case s of
+                Single -> arg
+                Multi  -> arg <> "..."
+        in  case r of
+                Required -> arg1
+                Optional -> "[" <> arg1 <> "]"
 
 infixl 6 |||
 (|||) :: Predicate -> Predicate -> Predicate
@@ -668,17 +673,15 @@ messageEquals text = pure . (text ==) . T.toLower . D.messageText
 messageContains :: Text -> Predicate
 messageContains text = pure . (text `T.isInfixOf`) . T.toLower . D.messageText
 
-simpleReply :: Text -> CommandFunc
+simpleReply :: Text -> PredicateFunc
 simpleReply replyText message = replyTo message replyText
 
 addResponse :: CommandFunc
-addResponse message = do
-    args <- parseArgs Add message
-    case args of
-        Right [String response] -> do
-            updateDb (\d -> d { dbResponses = nub $ response : dbResponses d })
-            replyTo message $ "Added **" <> response <> "** to responses"
-        _ -> replyTo message "Missing response to add"
+addResponse message = \case
+    Right [String response] -> do
+        updateDb (\d -> d { dbResponses = nub $ response : dbResponses d })
+        replyTo message $ "Added **" <> response <> "** to responses"
+    _ -> replyTo message "Missing response to add"
 
 getResponses :: App [Text]
 getResponses = do
@@ -686,81 +689,67 @@ getResponses = do
     liftIO $ dbResponses <$> readTVarIO dbRef
 
 removeResponse :: CommandFunc
-removeResponse message = do
-    args <- parseArgs Remove message
-    case args of
-        Right [String response] -> do
-            oldResponses <- getResponses
-            if response `elem` oldResponses
-                then do
-                    updateDb
-                        (\d -> d { dbResponses = delete response $ dbResponses d
-                                 }
-                        )
-                    replyTo message
-                        $  "Removed **"
-                        <> response
-                        <> "** from responses"
-                else
-                    replyTo message
-                    $  "Response **"
+removeResponse message = \case
+    Right [String response] -> do
+        oldResponses <- getResponses
+        if response `elem` oldResponses
+            then do
+                updateDb
+                    (\d -> d { dbResponses = delete response $ dbResponses d })
+                replyTo message
+                    $  "Removed **"
                     <> response
-                    <> "** not found"
-        _ -> replyTo message "Missing response to remove"
+                    <> "** from responses"
+            else replyTo message $ "Response **" <> response <> "** not found"
+    _ -> replyTo message "Missing response to remove"
 
 listResponses :: CommandFunc
-listResponses message = do
+listResponses message _ = do
     responses <- intercalate "\n" <$> getResponses
     replyTo message responses
 
 setActivity :: D.ActivityType -> CommandFunc
-setActivity activityType message = do
-    args <- parseArgs activityTypeCommand message
-    case args of
-        Right [String status] -> do
-            lift $ updateStatus activityType $ Just status
-            updateDb (\d -> d { dbActivity = Just (activityType, status) })
-            replyTo message
-                $  "Updated status to **"
-                <> activityTypeText
-                <> " "
-                <> status
-                <> "**"
-        _ -> do
-            lift $ updateStatus activityType Nothing
-            updateDb (\d -> d { dbActivity = Nothing })
-            replyTo message "Removed status"
+setActivity activityType message = \case
+    Right [String status] -> do
+        lift $ updateStatus activityType $ Just status
+        updateDb (\d -> d { dbActivity = Just (activityType, status) })
+        replyTo message
+            $  "Updated status to **"
+            <> activityTypeText
+            <> " "
+            <> status
+            <> "**"
+    _ -> do
+        lift $ updateStatus activityType Nothing
+        updateDb (\d -> d { dbActivity = Nothing })
+        replyTo message "Removed status"
   where
     activityTypeText = case activityType of
         D.ActivityTypeGame      -> "Playing"
         D.ActivityTypeListening -> "Listening to"
         D.ActivityTypeStreaming -> "Streaming"
         D.ActivityTypeCompeting -> "Competing in"
-    activityTypeCommand = case activityType of
-        D.ActivityTypeGame      -> Playing
-        D.ActivityTypeListening -> ListeningTo
-        D.ActivityTypeCompeting -> CompetingIn
-        D.ActivityTypeStreaming -> error "Streaming command not implemented"
 
 setMeanness :: CommandFunc
-setMeanness message = do
-    args <- parseArgs Meanness message
-    case args of
-        Left  e                   -> replyTo message $ "Invalid meanness: " <> e
-        Right [IntMaybe (Just m)] -> do
-            let meanness = min 11 . max 0 $ m
-            updateDb (\d -> d { dbMeanness = meanness })
-            replyTo message
-                $  "Set meanness to **"
-                <> T.pack (show meanness)
-                <> "**"
-        Right _ -> do
-            dbRef    <- asks configDb
-            meanness <- liftIO $ dbMeanness <$> readTVarIO dbRef
-            replyTo message
-                $  "Current meanness is **"
-                <> T.pack (show meanness)
-                <> "**"
+setMeanness message = \case
+    Left e -> replyTo message $ "Invalid meanness: " <> T.pack e
+    Right [Maybe (Just (Int m))] -> do
+        let meanness = min 11 . max 0 $ m
+        updateDb (\d -> d { dbMeanness = meanness })
+        replyTo message $ "Set meanness to **" <> T.pack (show meanness) <> "**"
+    Right _ -> do
+        dbRef    <- asks configDb
+        meanness <- liftIO $ dbMeanness <$> readTVarIO dbRef
+        replyTo message
+            $  "Current meanness is **"
+            <> T.pack (show meanness)
+            <> "**"
+
+sumInts :: CommandFunc
+sumInts message = \case
+    Left  e         -> replyTo message $ "Invalid args: " <> T.pack e
+    Right [Ints xs] -> replyTo message $ T.pack (show $ sum xs)
+    Right _         -> replyTo message $ T.pack (show (0 :: Int))
 
 updateDb :: (Db -> Db) -> App ()
 updateDb f = do

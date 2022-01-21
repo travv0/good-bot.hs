@@ -31,9 +31,11 @@ library
     , aeson
     , bytestring
     , discord-haskell
+    , either
     , exceptions
     , lens
     , mtl
+    , parsec
     , random
     , stm
     , text
