@@ -253,6 +253,7 @@ parseArgs command message = do
               *> P.string (T.unpack $ commandName command)
               *> P.spaces
               *> argInfoParser (commandArgInfo command)
+              <* P.eof
               )
               ""
         $ D.messageText message
