@@ -6,8 +6,11 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE DeriveFunctor #-}
 
-module Lib where
+module Lib
+    ( goodbot
+    ) where
 
 import           Control.Concurrent.STM         ( TVar
                                                 , atomically
@@ -214,35 +217,74 @@ data Arg = Arg
     , argName        :: Text
     , argDescription :: Text
     }
-data CommandArgInfo = ArgInfo
-    { argInfoArgs   :: [Arg]
-    , argInfoParser :: Parser CommandArgs
+data ArgParser a = ArgParser
+    { argParserArgs :: [Arg]
+    , argParser     :: Parser a
     }
+    deriving Functor
+type CommandArgInfo = [Arg]
 
-restStr :: Parser Text
-restStr = do
-    cs <- P.many P.anyChar
-    return $ T.pack cs
+instance Applicative ArgParser where
+    pure a = ArgParser [] (pure a)
+    ArgParser { argParserArgs = args1, argParser = p1 } <*> ArgParser { argParserArgs = args2, argParser = p2 }
+        = ArgParser { argParserArgs = args1 <> args2, argParser = p1 <*> p2 }
+
+arg :: Text -> Text -> Parser a -> ArgParser a
+arg name desc p = ArgParser
+    [ Arg { argType        = (Required, Single)
+          , argName        = name
+          , argDescription = desc
+          }
+    ]
+    (P.spaces *> p)
+
+
+optArg :: Text -> Text -> Parser a -> ArgParser (Maybe a)
+optArg name desc p = ArgParser
+    [ Arg { argType        = (Optional, Single)
+          , argName        = name
+          , argDescription = desc
+          }
+    ]
+    (P.spaces *> P.optionMaybe p)
+
+restArg :: Text -> Text -> ArgParser Text
+restArg name desc = ArgParser
+    [Arg { argType = (Required, Multi), argName = name, argDescription = desc }]
+    (P.spaces *> restStr1)
+
+optRestArg :: Text -> Text -> ArgParser (Maybe Text)
+optRestArg name desc = ArgParser
+    [Arg { argType = (Optional, Multi), argName = name, argDescription = desc }]
+    (P.spaces *> P.optionMaybe restStr1)
+
+multiArg :: Text -> Text -> Parser a -> ArgParser [a]
+multiArg name desc p = ArgParser
+    [Arg { argType = (Required, Multi), argName = name, argDescription = desc }]
+    (P.spaces *> manyArgs1 p)
+
+optMultiArg :: Text -> Text -> Parser a -> ArgParser (Maybe [a])
+optMultiArg name desc p = ArgParser
+    [Arg { argType = (Optional, Multi), argName = name, argDescription = desc }]
+    (P.spaces *> P.optionMaybe (manyArgs1 p))
 
 restStr1 :: Parser Text
 restStr1 = do
-    cs <- P.many1 P.anyChar
+    cs <- P.spaces *> P.many1 P.anyChar
     return $ T.pack cs
 
 int :: Parser Int
 int = do
-    d <- P.many1 P.digit
+    d <- P.spaces *> P.many1 P.digit
     return $ read d
 
 str :: Parser Text
 str = do
-    cs <- P.many1 (P.satisfy (not . isSpace))
+    cs <- P.spaces *> P.many1 (P.satisfy (not . isSpace))
     return $ T.pack cs
 
-ints :: Parser [Int]
-ints = do
-    ds <- P.many (P.spaces *> P.many1 P.digit)
-    return $ map read ds
+manyArgs1 :: Parser a -> Parser [a]
+manyArgs1 p = P.many1 (P.spaces *> p)
 
 parseArgs :: Command -> D.Message -> App (Either ParseError CommandArgs)
 parseArgs command message = do
@@ -251,16 +293,14 @@ parseArgs command message = do
         $ P.parse
               (  P.string (T.unpack prefix)
               *> P.string (T.unpack $ commandName command)
-              *> P.spaces
-              *> argInfoParser (commandArgInfo command)
+              *> argParser (commandArgs command)
               <* P.eof
               )
               ""
         $ D.messageText message
 
 data Command
-    = RR
-    | Define
+    = Define
     | Urban
     | Add
     | Remove
@@ -270,6 +310,7 @@ data Command
     | CompetingIn
     | Meanness
     | Sum
+    | RR
     | Help
     deriving (Show, Eq, Enum, Bounded)
 
@@ -284,100 +325,38 @@ data CommandArgs
     | ListeningToArgs (Maybe Text)
     | CompetingInArgs (Maybe Text)
     | MeannessArgs (Maybe Int)
-    | SumArgs [Int]
+    | SumArgs (Maybe [Int])
     | HelpArgs (Maybe Text)
     deriving (Show, Eq)
 
 commandName :: Command -> Text
 commandName = T.toLower . T.pack . head . words . show
 
-commandArgInfo :: Command -> CommandArgInfo
-commandArgInfo RR = ArgInfo { argInfoArgs = [], argInfoParser = pure RRArgs }
-commandArgInfo Define = ArgInfo
-    { argInfoArgs   = [ Arg { argType        = (Required, Multi)
-                            , argName        = "term"
-                            , argDescription = "The word or phrase to look up."
-                            }
-                      ]
-    , argInfoParser = DefineArgs <$> restStr1
-    }
-commandArgInfo Urban = ArgInfo
-    { argInfoArgs   = [ Arg { argType        = (Required, Multi)
-                            , argName        = "term"
-                            , argDescription = "The word or phrase to look up."
-                            }
-                      ]
-    , argInfoParser = UrbanArgs <$> restStr1
-    }
-commandArgInfo Add = ArgInfo
-    { argInfoArgs   = [ Arg { argType        = (Required, Multi)
-                            , argName        = "response"
-                            , argDescription = "The response to add."
-                            }
-                      ]
-    , argInfoParser = AddArgs <$> restStr1
-    }
-commandArgInfo Remove = ArgInfo
-    { argInfoArgs   = [ Arg { argType        = (Required, Multi)
-                            , argName        = "response"
-                            , argDescription = "The response to remove."
-                            }
-                      ]
-    , argInfoParser = RemoveArgs <$> restStr1
-    }
-commandArgInfo List =
-    ArgInfo { argInfoArgs = [], argInfoParser = pure ListArgs }
-commandArgInfo Playing = ArgInfo
-    { argInfoArgs   = [ Arg { argType        = (Optional, Multi)
-                            , argName        = "name"
-                            , argDescription = "What's the bot playing?"
-                            }
-                      ]
-    , argInfoParser = PlayingArgs <$> P.optionMaybe restStr
-    }
-commandArgInfo ListeningTo = ArgInfo
-    { argInfoArgs   = [ Arg { argType        = (Optional, Multi)
-                            , argName        = "name"
-                            , argDescription = "What's the bot listening to?"
-                            }
-                      ]
-    , argInfoParser = ListeningToArgs <$> P.optionMaybe restStr
-    }
-commandArgInfo CompetingIn = ArgInfo
-    { argInfoArgs   = [ Arg { argType        = (Optional, Multi)
-                            , argName        = "name"
-                            , argDescription = "What's the bot competing in?"
-                            }
-                      ]
-    , argInfoParser = CompetingInArgs <$> P.optionMaybe restStr
-    }
-commandArgInfo Meanness = ArgInfo
-    { argInfoArgs   =
-        [ Arg
-              { argType        = (Optional, Single)
-              , argName        = "level"
-              , argDescription =
-                  "The number between 0 and 10 to set the bot's meanness to. Higher is meaner. Leave blank to view current meanness."
-              }
-        ]
-    , argInfoParser = MeannessArgs <$> P.optionMaybe int
-    }
-commandArgInfo Sum = ArgInfo
-    { argInfoArgs   = [ Arg { argType        = (Optional, Multi)
-                            , argName        = "nums"
-                            , argDescription = "Some integers to sum."
-                            }
-                      ]
-    , argInfoParser = SumArgs <$> ints
-    }
-commandArgInfo Help = ArgInfo
-    { argInfoArgs   = [ Arg { argType        = (Optional, Single)
-                            , argName        = "command"
-                            , argDescription = "Command to show help for."
-                            }
-                      ]
-    , argInfoParser = HelpArgs <$> P.optionMaybe str
-    }
+commandArgs :: Command -> ArgParser CommandArgs
+commandArgs RR = pure RRArgs
+commandArgs Define =
+    DefineArgs <$> restArg "term" "The word or phrase to look up."
+commandArgs Urban =
+    UrbanArgs <$> restArg "term" "The word or phrase to look up."
+commandArgs Add = AddArgs <$> restArg "response" "The response to add."
+commandArgs Remove =
+    RemoveArgs <$> restArg "response" "The response to remove."
+commandArgs List = pure ListArgs
+commandArgs Playing =
+    PlayingArgs <$> optRestArg "name" "What's the bot playing?"
+commandArgs ListeningTo =
+    ListeningToArgs <$> optRestArg "name" "What's the bot listening to?"
+commandArgs CompetingIn =
+    CompetingInArgs <$> optRestArg "name" "What's the bot competing in?"
+commandArgs Meanness =
+    MeannessArgs
+        <$> optArg
+                "level"
+                "The number between 0 and 10 to set the bot's meanness to. Higher is meaner. Leave blank to view current meanness."
+                int
+commandArgs Sum = SumArgs <$> optMultiArg "nums" "Some integers to sum." int
+commandArgs Help =
+    HelpArgs <$> optArg "command" "Command to show help for." str
 
 commandHelpText :: Command -> Text
 commandHelpText RR = "Play Russian Roulette!"
@@ -426,7 +405,8 @@ predicates =
     ]
 
 handleParseError :: D.Message -> Command -> ParseError -> App ()
-handleParseError message command e =
+handleParseError message command e = do
+    prefix <- asks configCommandPrefix
     replyTo message
         $  "```\nInvalid args:\n\n"
         <> D.messageText message
@@ -435,7 +415,7 @@ handleParseError message command e =
         <> "^\n\n"
         <> T.pack (show e)
         <> "\n\n"
-        <> showUsage command
+        <> showUsage prefix command
         <> "\n```"
 
 messageCreate :: D.Message -> App ()
@@ -676,22 +656,22 @@ respond message = do
     replyTo message $ responses !! responseNum
 
 argStr :: CommandArgInfo -> Text
-argStr ArgInfo { argInfoArgs } = mconcat $ map
+argStr argInfoArgs = mconcat $ map
     (\Arg { argType, argName } -> " " <> modifyArg argType (T.toUpper argName))
     argInfoArgs
 
 modifyArg :: (Semigroup a, IsString a) => (ArgReq, ArgArity) -> a -> a
-modifyArg (r, s) arg =
+modifyArg (r, s) arg0 =
     let arg1 = case s of
-            Single -> arg
-            Multi  -> arg <> "..."
+            Single -> arg0
+            Multi  -> arg0 <> "..."
     in  case r of
             Required -> arg1
             Optional -> "[" <> arg1 <> "]"
 
-showUsage :: Command -> Text
-showUsage command =
-    "Usage: " <> commandName command <> argStr (commandArgInfo command)
+showUsage :: Text -> Command -> Text
+showUsage prefix command = "Usage: " <> prefix <> commandName command <> argStr
+    (argParserArgs $ commandArgs command)
 
 showHelp :: Maybe Text -> CommandFunc
 showHelp mcommand message = do
@@ -707,17 +687,17 @@ showHelp mcommand message = do
                             <> " help\n-----------------------------\n"
                             <> commandHelpText command
                             <> "\n\n"
-                            <> showUsage command
-                            <> case argInfoArgs $ commandArgInfo command of
+                            <> showUsage prefix command
+                            <> case argParserArgs $ commandArgs command of
                                    [] -> ""
                                    argInfo ->
                                        "\n\n"
                                            <> (T.intercalate "\n" . map
                                                   (\Arg { argName, argDescription } ->
-                                                      let arg = T.toUpper
+                                                      let arg' = T.toUpper
                                                               argName
                                                       in  " "
-                                                              <> arg
+                                                              <> arg'
                                                               <> " - "
                                                               <> argDescription
                                                   )
@@ -733,7 +713,10 @@ showHelp mcommand message = do
                            (map
                                (\command ->
                                    commandName command
-                                       <> argStr (commandArgInfo command)
+                                       <> argStr
+                                              ( argParserArgs
+                                              $ commandArgs command
+                                              )
                                        <> " - "
                                        <> commandHelpText command
                                )
@@ -831,8 +814,9 @@ setMeanness Nothing message = do
     meanness <- liftIO $ dbMeanness <$> readTVarIO dbRef
     replyTo message $ "Current meanness is **" <> T.pack (show meanness) <> "**"
 
-sumInts :: (Show a, Foldable t, Num a) => t a -> CommandFunc
-sumInts xs message = replyTo message $ T.pack (show $ sum xs)
+sumInts :: (Foldable t, Show a, Num a) => Maybe (t a) -> D.Message -> App ()
+sumInts (Just xs) message = replyTo message . T.pack . show $ sum xs
+sumInts Nothing   message = replyTo message . T.pack $ show (0 :: Int)
 
 updateDb :: (Db -> Db) -> App ()
 updateDb f = do
