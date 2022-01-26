@@ -11,7 +11,7 @@ module Commands
     , optRestArg
     , multiArg
     , optMultiArg
-    , num
+    , int
     , str
     , defaultErrorText
     , defaultHelpText
@@ -98,8 +98,8 @@ optMultiArg name desc p = ArgParser
 restStr1 :: Parser Text
 restStr1 = T.pack <$> (P.spaces *> P.many1 P.anyChar)
 
-num :: (Read a, Num a) => Parser a
-num = read <$> (P.spaces *> P.many1 P.digit)
+int :: (Read a, Integral a) => Parser a
+int = read <$> (P.spaces *> P.many1 P.digit)
 
 str :: Parser Text
 str = T.pack <$> (P.spaces *> P.many1 (P.satisfy (not . isSpace)))

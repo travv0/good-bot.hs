@@ -9,7 +9,7 @@ module Lib
 import           Commands                       ( ArgParser
                                                 , defaultHelpText
                                                 , handleCommand
-                                                , num
+                                                , int
                                                 , optArg
                                                 , optMultiArg
                                                 , optRestArg
@@ -259,8 +259,8 @@ commandArgs Meanness =
         <$> optArg
                 "level"
                 "The number between 0 and 10 to set the bot's meanness to. Higher is meaner. Leave blank to view current meanness."
-                num
-commandArgs Sum = SumArgs <$> optMultiArg "nums" "Some integers to sum." num
+                int
+commandArgs Sum = SumArgs <$> optMultiArg "nums" "Some integers to sum." int
 commandArgs Help =
     HelpArgs <$> optArg "command" "Command to show help for." str
 
