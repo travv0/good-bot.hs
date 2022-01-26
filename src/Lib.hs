@@ -1,17 +1,22 @@
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE DeriveFunctor #-}
 
 module Lib
     ( goodbot
     ) where
 
+import           Commands                       ( ArgParser
+                                                , defaultErrorText
+                                                , defaultHelpText
+                                                , int
+                                                , optArg
+                                                , optMultiArg
+                                                , optRestArg
+                                                , parseArgs
+                                                , restArg
+                                                , str
+                                                )
 import           Control.Concurrent.STM         ( TVar
                                                 , atomically
                                                 , modifyTVar'
@@ -43,18 +48,13 @@ import           Data.Aeson                     ( (.:)
                                                 , withObject
                                                 )
 import qualified Data.ByteString.Lazy          as BSL
-import           Data.Char                      ( isSpace
-                                                , toLower
-                                                )
-import           Data.Foldable                  ( find
-                                                , for_
-                                                )
+import           Data.Char                      ( toLower )
+import           Data.Foldable                  ( for_ )
 import           Data.List                      ( delete
                                                 , nub
                                                 , stripPrefix
                                                 )
 import           Data.Maybe                     ( fromMaybe )
-import           Data.String                    ( IsString )
 import           Data.Text                      ( Text
                                                 , intercalate
                                                 )
@@ -83,9 +83,6 @@ import           Network.Wreq                   ( Response
 import qualified Network.Wreq                  as W
 import           System.Environment             ( getArgs )
 import           System.Random                  ( randomIO )
-import qualified Text.Parsec                   as P
-import           Text.Parsec                    ( ParseError )
-import           Text.Parsec.Text               ( Parser )
 import           Text.Read                      ( readMaybe )
 
 type App a = ReaderT Config D.DiscordHandler a
@@ -207,97 +204,8 @@ ready dbRef = do
             lift $ updateStatus activityType $ Just activity
         Nothing -> pure ()
 
-data ArgArity = Single | Multi
-data ArgReq = Required | Optional
-type ArgType = (ArgReq, ArgArity)
 type CommandFunc = D.Message -> App ()
 type Predicate = D.Message -> App Bool
-data Arg = Arg
-    { argType        :: ArgType
-    , argName        :: Text
-    , argDescription :: Text
-    }
-data ArgParser a = ArgParser
-    { argParserArgs :: [Arg]
-    , argParser     :: Parser a
-    }
-    deriving Functor
-type CommandArgInfo = [Arg]
-
-instance Applicative ArgParser where
-    pure a = ArgParser [] (pure a)
-    ArgParser { argParserArgs = args1, argParser = p1 } <*> ArgParser { argParserArgs = args2, argParser = p2 }
-        = ArgParser { argParserArgs = args1 <> args2, argParser = p1 <*> p2 }
-
-arg :: Text -> Text -> Parser a -> ArgParser a
-arg name desc p = ArgParser
-    [ Arg { argType        = (Required, Single)
-          , argName        = name
-          , argDescription = desc
-          }
-    ]
-    (P.spaces *> p)
-
-
-optArg :: Text -> Text -> Parser a -> ArgParser (Maybe a)
-optArg name desc p = ArgParser
-    [ Arg { argType        = (Optional, Single)
-          , argName        = name
-          , argDescription = desc
-          }
-    ]
-    (P.spaces *> P.optionMaybe p)
-
-restArg :: Text -> Text -> ArgParser Text
-restArg name desc = ArgParser
-    [Arg { argType = (Required, Multi), argName = name, argDescription = desc }]
-    (P.spaces *> restStr1)
-
-optRestArg :: Text -> Text -> ArgParser (Maybe Text)
-optRestArg name desc = ArgParser
-    [Arg { argType = (Optional, Multi), argName = name, argDescription = desc }]
-    (P.spaces *> P.optionMaybe restStr1)
-
-multiArg :: Text -> Text -> Parser a -> ArgParser [a]
-multiArg name desc p = ArgParser
-    [Arg { argType = (Required, Multi), argName = name, argDescription = desc }]
-    (P.spaces *> manyArgs1 p)
-
-optMultiArg :: Text -> Text -> Parser a -> ArgParser (Maybe [a])
-optMultiArg name desc p = ArgParser
-    [Arg { argType = (Optional, Multi), argName = name, argDescription = desc }]
-    (P.spaces *> P.optionMaybe (manyArgs1 p))
-
-restStr1 :: Parser Text
-restStr1 = do
-    cs <- P.spaces *> P.many1 P.anyChar
-    return $ T.pack cs
-
-int :: Parser Int
-int = do
-    d <- P.spaces *> P.many1 P.digit
-    return $ read d
-
-str :: Parser Text
-str = do
-    cs <- P.spaces *> P.many1 (P.satisfy (not . isSpace))
-    return $ T.pack cs
-
-manyArgs1 :: Parser a -> Parser [a]
-manyArgs1 p = P.many1 (P.spaces *> p)
-
-parseArgs :: Command -> D.Message -> App (Either ParseError CommandArgs)
-parseArgs command message = do
-    prefix <- asks configCommandPrefix
-    return
-        $ P.parse
-              (  P.string (T.unpack prefix)
-              *> P.string (T.unpack $ commandName command)
-              *> argParser (commandArgs command)
-              <* P.eof
-              )
-              ""
-        $ D.messageText message
 
 data Command
     = Define
@@ -404,23 +312,10 @@ predicates =
       )
     ]
 
-handleParseError :: D.Message -> Command -> ParseError -> App ()
-handleParseError message command e = do
-    prefix <- asks configCommandPrefix
-    replyTo message
-        $  "```\nInvalid args:\n\n"
-        <> D.messageText message
-        <> "\n"
-        <> T.pack (replicate (P.sourceColumn (P.errorPos e) - 1) ' ')
-        <> "^\n\n"
-        <> T.pack (show e)
-        <> "\n\n"
-        <> showUsage prefix command
-        <> "\n```"
-
 messageCreate :: D.Message -> App ()
 messageCreate message = do
-    self <- isSelf message
+    self   <- isSelf message
+    prefix <- asks configCommandPrefix
     if self
         then pure ()
         else do
@@ -429,11 +324,22 @@ messageCreate message = do
                 commands
             case commandMatches of
                 (command : _) ->
-                    parseArgs command message
-                        >>= (\case
-                                Left  e   -> handleParseError message command e
-                                Right cas -> commandFunc cas message
-                            )
+                    case
+                            parseArgs prefix
+                                      commandName
+                                      commandArgs
+                                      command
+                                      (D.messageText message)
+                        of
+                            Left e -> replyTo message $ defaultErrorText
+                                prefix
+                                commandName
+                                commandArgs
+                                command
+                                (D.messageText message)
+                                e
+                            Right cas -> commandFunc cas message
+
                 _ -> do
                     predicateMatches <- filterM (\(p, _) -> p message)
                                                 predicates
@@ -655,75 +561,15 @@ respond message = do
     responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
     replyTo message $ responses !! responseNum
 
-argStr :: CommandArgInfo -> Text
-argStr argInfoArgs = mconcat $ map
-    (\Arg { argType, argName } -> " " <> modifyArg argType (T.toUpper argName))
-    argInfoArgs
-
-modifyArg :: (Semigroup a, IsString a) => (ArgReq, ArgArity) -> a -> a
-modifyArg (r, s) arg0 =
-    let arg1 = case s of
-            Single -> arg0
-            Multi  -> arg0 <> "..."
-    in  case r of
-            Required -> arg1
-            Optional -> "[" <> arg1 <> "]"
-
-showUsage :: Text -> Command -> Text
-showUsage prefix command = "Usage: " <> prefix <> commandName command <> argStr
-    (argParserArgs $ commandArgs command)
-
 showHelp :: Maybe Text -> CommandFunc
 showHelp mcommand message = do
     prefix <- asks configCommandPrefix
-    let
-        helpText = case mcommand of
-            (Just commandStr) ->
-                case find ((== commandStr) . commandName) commands of
-                    Nothing -> "Command not found: **" <> commandStr <> "**"
-                    Just command ->
-                        "```\n"
-                            <> commandStr
-                            <> " help\n-----------------------------\n"
-                            <> commandHelpText command
-                            <> "\n\n"
-                            <> showUsage prefix command
-                            <> case argParserArgs $ commandArgs command of
-                                   [] -> ""
-                                   argInfo ->
-                                       "\n\n"
-                                           <> (T.intercalate "\n" . map
-                                                  (\Arg { argName, argDescription } ->
-                                                      let arg' = T.toUpper
-                                                              argName
-                                                      in  " "
-                                                              <> arg'
-                                                              <> " - "
-                                                              <> argDescription
-                                                  )
-                                              )
-                                                  argInfo
-                            <> "\n```"
-            Nothing ->
-                "```\nCommands (prefix with "
-                    <> prefix
-                    <> ")\n-----------------------------\n"
-                    <> intercalate
-                           "\n"
-                           (map
-                               (\command ->
-                                   commandName command
-                                       <> argStr
-                                              ( argParserArgs
-                                              $ commandArgs command
-                                              )
-                                       <> " - "
-                                       <> commandHelpText command
-                               )
-                               commands
-                           )
-                    <> "\n```"
-    replyTo message helpText
+    replyTo message $ defaultHelpText prefix
+                                      commandName
+                                      commandHelpText
+                                      commandArgs
+                                      mcommand
+                                      commands
 
 infixl 6 |||
 (|||) :: Predicate -> Predicate -> Predicate

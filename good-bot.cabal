@@ -21,6 +21,7 @@ source-repository head
 library
   exposed-modules:
       Lib
+      Commands
   other-modules:
       Paths_good_bot
   hs-source-dirs:
