@@ -35,6 +35,7 @@ import           Control.Monad.Catch            ( catchAll
                                                 , catchIOError
                                                 )
 import           Control.Monad.Reader           ( ReaderT
+                                                , ask
                                                 , asks
                                                 , lift
                                                 , liftIO
@@ -314,18 +315,20 @@ predicates =
 
 messageCreate :: D.Message -> App ()
 messageCreate message = do
-    self   <- lift $ isFromSelf message
-    prefix <- asks configCommandPrefix
+    self <- lift $ isFromSelf message
     if self
         then pure ()
         else do
-            commandHandled <- handleCommand prefix
-                                            commandName
-                                            commandArgs
-                                            commandFunc
-                                            Nothing
-                                            message
-                                            commands
+            prefix         <- asks configCommandPrefix
+            config         <- ask
+            commandHandled <- lift $ handleCommand
+                prefix
+                commandName
+                commandArgs
+                (\args m -> flip runReaderT config $ commandFunc args m)
+                Nothing
+                message
+                commands
             unless commandHandled $ do
                 predicateMatches <- lift
                     $ filterM (\(p, _) -> p message) predicates

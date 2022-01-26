@@ -19,9 +19,6 @@ module Commands
     ) where
 
 import           Control.Monad                  ( filterM )
-import           Control.Monad.Reader           ( MonadTrans
-                                                , lift
-                                                )
 import           Data.Char                      ( isSpace )
 import           Data.Foldable                  ( find )
 import           Data.Maybe
@@ -221,19 +218,18 @@ defaultErrorText prefix commandName commandArgs command message e =
         <> "\n```"
 
 handleCommand
-    :: (Monad (m D.DiscordHandler), MonadTrans m)
-    => Text
+    :: Text
     -> (command -> Text)
     -> (command -> ArgParser a)
-    -> (a -> D.Message -> m D.DiscordHandler ())
+    -> (a -> D.Message -> D.DiscordHandler ())
     -> Maybe (ErrorHandler command a)
     -> D.Message
     -> [command]
-    -> m D.DiscordHandler Bool
+    -> D.DiscordHandler Bool
 handleCommand prefix commandName commandArgs commandHandler errorHandler message commands
     = do
         commandMatches <- filterM
-            (\command -> lift $ isCommand prefix (commandName command) message)
+            (\command -> isCommand prefix (commandName command) message)
             commands
         case commandMatches of
             (command : _) -> do
@@ -244,7 +240,7 @@ handleCommand prefix commandName commandArgs commandHandler errorHandler message
                                   command
                                   (D.messageText message)
                     of
-                        Left e -> lift . replyTo message $ fromMaybe
+                        Left e -> replyTo message $ fromMaybe
                             defaultErrorText
                             errorHandler
                             prefix
