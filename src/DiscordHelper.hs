@@ -22,10 +22,8 @@ module DiscordHelper
     ) where
 
 import           Control.Concurrent             ( writeChan )
-import           Control.Monad.Reader           ( MonadReader
-                                                , MonadTrans
-                                                , ask
-                                                , lift
+import           Control.Monad.Reader           ( ask
+                                                , liftIO
                                                 )
 import           Data.Aeson                     ( FromJSON )
 import           Data.Foldable                  ( for_ )
@@ -96,17 +94,15 @@ messageEquals text = pure . (text ==) . T.toLower . D.messageText
 messageContains :: Text -> Predicate
 messageContains text = pure . (text `T.isInfixOf`) . T.toLower . D.messageText
 
-writeLog
-    :: (MonadTrans t, MonadReader D.DiscordHandle (t IO)) => Text -> t IO ()
+writeLog :: Text -> D.DiscordHandler ()
 writeLog l = do
     h <- ask
-    lift $ writeChan (D.discordHandleLog h) l
+    liftIO $ writeChan (D.discordHandleLog h) l
 
-writeError
-    :: (MonadTrans t, MonadReader D.DiscordHandle (t IO)) => Text -> t IO ()
+writeError :: Text -> D.DiscordHandler ()
 writeError e = do
     h <- ask
-    lift $ writeChan (D.discordHandleLog h) $ "Error: " <> e
+    liftIO $ writeChan (D.discordHandleLog h) $ "Error: " <> e
 
 restCall :: (FromJSON a, D.Request (r a)) => r a -> D.DiscordHandler ()
 restCall request = do
