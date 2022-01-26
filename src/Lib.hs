@@ -7,13 +7,12 @@ module Lib
     ) where
 
 import           Commands                       ( ArgParser
-                                                , defaultErrorText
                                                 , defaultHelpText
+                                                , handleCommand
                                                 , int
                                                 , optArg
                                                 , optMultiArg
                                                 , optRestArg
-                                                , parseArgs
                                                 , restArg
                                                 , str
                                                 )
@@ -29,27 +28,29 @@ import           Control.Lens                   ( (&)
                                                 , view
                                                 )
 import           Control.Monad                  ( filterM
+                                                , unless
                                                 , when
                                                 )
 import           Control.Monad.Catch            ( catchAll
                                                 , catchIOError
                                                 )
-import           Control.Monad.Reader           ( MonadTrans(lift)
-                                                , ReaderT(runReaderT)
+import           Control.Monad.Reader           ( ReaderT
                                                 , asks
+                                                , lift
                                                 , liftIO
+                                                , runReaderT
                                                 )
 import           Data.Aeson                     ( (.:)
-                                                , FromJSON(parseJSON)
+                                                , FromJSON
                                                 , defaultOptions
                                                 , eitherDecode
                                                 , fieldLabelModifier
                                                 , genericParseJSON
+                                                , parseJSON
                                                 , withObject
                                                 )
 import qualified Data.ByteString.Lazy          as BSL
 import           Data.Char                      ( toLower )
-import           Data.Foldable                  ( for_ )
 import           Data.List                      ( delete
                                                 , nub
                                                 , stripPrefix
@@ -70,7 +71,18 @@ import           Data.Time                      ( defaultTimeLocale
 import           Data.Yaml                      ( decodeFileEither )
 import qualified Discord                       as D
 import qualified Discord.Internal.Rest         as D
-import qualified Discord.Requests              as D
+import           DiscordHelper                  ( Predicate
+                                                , createGuildBan
+                                                , createMessage
+                                                , isFromSelf
+                                                , isFromUser
+                                                , messageContains
+                                                , replyTo
+                                                , updateStatus
+                                                , writeError
+                                                , writeLog
+                                                , (|||)
+                                                )
 import           GHC.Generics                   ( Generic )
 import           Network.Wreq                   ( Response
                                                 , defaults
@@ -139,9 +151,6 @@ logText t = do
         <> ": "
         <> t
 
-logError :: Text -> IO ()
-logError t = logText $ "Error: " <> t
-
 goodbot :: IO ()
 goodbot = do
     args <- getArgs
@@ -167,19 +176,8 @@ goodbot = do
     T.putStrLn userFacingError
 
 onStart :: UserConfig -> D.DiscordHandler ()
-onStart config =
-    liftIO $ logText $ "bot started with config " <> T.pack (show config)
-
-updateStatus :: D.ActivityType -> Maybe Text -> D.DiscordHandler ()
-updateStatus activityType mactivity =
-    D.sendCommand $ D.UpdateStatus $ D.UpdateStatusOpts
-        { D.updateStatusOptsSince     = Nothing
-        , D.updateStatusOptsGame      = case mactivity of
-            Just activity -> Just $ D.Activity activity activityType Nothing
-            Nothing       -> Nothing
-        , D.updateStatusOptsNewStatus = D.UpdateStatusOnline
-        , D.updateStatusOptsAFK       = False
-        }
+onStart config = do
+    writeLog $ "bot started with config " <> T.pack (show config)
 
 eventHandler :: UserConfig -> TVar Db -> D.Event -> D.DiscordHandler ()
 eventHandler UserConfig {..} dbRef event =
@@ -205,7 +203,6 @@ ready dbRef = do
         Nothing -> pure ()
 
 type CommandFunc = D.Message -> App ()
-type Predicate = D.Message -> App Bool
 
 data Command
     = Define
@@ -304,9 +301,12 @@ commandFunc (HelpArgs     command ) = showHelp command
 commands :: [Command]
 commands = [minBound .. maxBound]
 
+isFromCarl :: Predicate
+isFromCarl = isFromUser 235148962103951360
+
 predicates :: [(Predicate, CommandFunc)]
 predicates =
-    [ (isCarl, simpleReply "Carl is a cuck")
+    [ (isFromCarl, simpleReply "Carl is a cuck")
     , ( mentionsMe ||| messageContains "@everyone" ||| messageContains "@here"
       , respond
       )
@@ -314,50 +314,24 @@ predicates =
 
 messageCreate :: D.Message -> App ()
 messageCreate message = do
-    self   <- isSelf message
+    self   <- lift $ isFromSelf message
     prefix <- asks configCommandPrefix
     if self
         then pure ()
         else do
-            commandMatches <- filterM
-                (\command -> isCommand (commandName command) message)
-                commands
-            case commandMatches of
-                (command : _) ->
-                    case
-                            parseArgs prefix
-                                      commandName
-                                      commandArgs
-                                      command
-                                      (D.messageText message)
-                        of
-                            Left e -> replyTo message $ defaultErrorText
-                                prefix
-                                commandName
-                                commandArgs
-                                command
-                                (D.messageText message)
-                                e
-                            Right cas -> commandFunc cas message
-
-                _ -> do
-                    predicateMatches <- filterM (\(p, _) -> p message)
-                                                predicates
-                    case predicateMatches of
-                        ((_, c) : _) -> c message
-                        _            -> pure ()
-
-isSelf :: Predicate
-isSelf message = do
-    cache <- lift D.readCache
-    pure $ D.userId (D.cacheCurrentUser cache) == D.userId
-        (D.messageAuthor message)
-
-isUser :: D.UserId -> Predicate
-isUser userId message = pure $ D.userId (D.messageAuthor message) == userId
-
-isCarl :: Predicate
-isCarl = isUser 235148962103951360
+            commandHandled <- handleCommand prefix
+                                            commandName
+                                            commandArgs
+                                            commandFunc
+                                            Nothing
+                                            message
+                                            commands
+            unless commandHandled $ do
+                predicateMatches <- lift
+                    $ filterM (\(p, _) -> p message) predicates
+                case predicateMatches of
+                    ((_, c) : _) -> c message
+                    _            -> pure ()
 
 typingStart :: D.TypingInfo -> App ()
 typingStart (D.TypingInfo userId channelId _utcTime) = do
@@ -370,8 +344,9 @@ typingStart (D.TypingInfo userId channelId _utcTime) = do
             .   (`mod` meannessRatio meanness)
             <$> (randomIO :: IO Int)
         when shouldReply
-            $  createMessage channelId Nothing
-            $  T.pack
+            .  lift
+            .  createMessage channelId Nothing
+            .  T.pack
             $  "shut up <@"
             <> show userId
             <> ">"
@@ -379,46 +354,10 @@ typingStart (D.TypingInfo userId channelId _utcTime) = do
     meannessRatio 11 = 1
     meannessRatio n  = 2000 `div` n
 
-restCall :: (FromJSON a, D.Request (r a)) => r a -> App ()
-restCall request = do
-    r <- lift $ D.restCall request
-    case r of
-        Right _   -> pure ()
-        Left  err -> liftIO $ logError $ T.pack $ show err
-
-replyTo :: D.Message -> Text -> App ()
-replyTo replyingTo =
-    createMessage (D.messageChannel replyingTo) (Just $ D.messageId replyingTo)
-
-createMessage :: D.ChannelId -> Maybe D.MessageId -> Text -> App ()
-createMessage channelId replyingToId message =
-    let chunks = T.chunksOf 2000 message
-    in
-        for_ chunks $ \chunk -> restCall $ D.CreateMessageDetailed
-            channelId
-            D.def
-                { D.messageDetailedContent         = chunk
-                , D.messageDetailedAllowedMentions = Just D.def
-                    { D.mentionRepliedUser = False
-                    }
-                , D.messageDetailedReference       = fmap
-                    (\mId -> D.def { D.referenceMessageId = Just mId })
-                    replyingToId
-                }
-
-createGuildBan :: D.GuildId -> D.UserId -> Text -> App ()
-createGuildBan guildId userId banMessage = restCall $ D.CreateGuildBan
-    guildId
-    userId
-    (D.CreateGuildBanOpts Nothing (Just banMessage))
-
-fromBot :: D.Message -> Bool
-fromBot m = D.userIsBot (D.messageAuthor m)
-
 russianRoulette :: CommandFunc
 russianRoulette message = do
     chamber <- liftIO $ (`mod` 6) <$> (randomIO :: IO Int)
-    case (chamber, D.messageGuild message) of
+    lift $ case (chamber, D.messageGuild message) of
         (0, Just gId) -> do
             replyTo message response
             createGuildBan gId (D.userId $ D.messageAuthor message) response
@@ -442,10 +381,9 @@ instance FromJSON Definition where
 define :: (Text -> App (Maybe Text)) -> Text -> CommandFunc
 define getOutput phrase message = do
     moutput <- getOutput phrase
-    case moutput of
-        Just output -> replyTo message output
-        Nothing ->
-            replyTo message $ "No definition found for **" <> phrase <> "**"
+    lift . replyTo message $ case moutput of
+        Just output -> output
+        Nothing     -> "No definition found for **" <> phrase <> "**"
 
 buildDefineOutput :: Text -> Definition -> Text
 buildDefineOutput word definition =
@@ -490,9 +428,9 @@ buildDefineOutputHandleFail
 buildDefineOutputHandleFail word (Right defs) _ | not (null defs) =
     pure $ Just $ T.intercalate "\n\n" $ map (buildDefineOutput word) defs
 buildDefineOutputHandleFail _ (Left err) Nothing =
-    liftIO (logError $ T.pack err) >> pure Nothing
+    lift (writeError $ T.pack err) >> pure Nothing
 buildDefineOutputHandleFail _ (Left err) (Just fallback) =
-    liftIO (logError $ T.pack err) >> fallback
+    lift (writeError $ T.pack err) >> fallback
 buildDefineOutputHandleFail _ _         (Just fallback) = fallback
 buildDefineOutputHandleFail _ (Right _) Nothing         = pure Nothing
 
@@ -550,7 +488,7 @@ urbanToDictionary (UrbanDefinition def) =
 
 mentionsMe :: Predicate
 mentionsMe message = do
-    cache <- lift D.readCache
+    cache <- D.readCache
     pure $ D.userId (D.cacheCurrentUser cache) `elem` map
         D.userId
         (D.messageMentions message)
@@ -559,52 +497,25 @@ respond :: CommandFunc
 respond message = do
     responses   <- getResponses
     responseNum <- liftIO $ (`mod` length responses) <$> (randomIO :: IO Int)
-    replyTo message $ responses !! responseNum
+    lift $ replyTo message $ responses !! responseNum
 
 showHelp :: Maybe Text -> CommandFunc
 showHelp mcommand message = do
     prefix <- asks configCommandPrefix
-    replyTo message $ defaultHelpText prefix
-                                      commandName
-                                      commandHelpText
-                                      commandArgs
-                                      mcommand
-                                      commands
-
-infixl 6 |||
-(|||) :: Predicate -> Predicate -> Predicate
-(pred1 ||| pred2) message = do
-    p1 <- pred1 message
-    p2 <- pred2 message
-    pure $ p1 || p2
-
-isCommand :: Text -> Predicate
-isCommand command message = if fromBot message
-    then pure False
-    else do
-        prefix <- asks configCommandPrefix
-        (   messageEquals (prefix <> command)
-            ||| messageStartsWith (prefix <> command <> " ")
-            )
-            message
-
-messageStartsWith :: Text -> Predicate
-messageStartsWith text =
-    pure . (text `T.isPrefixOf`) . T.toLower . D.messageText
-
-messageEquals :: Text -> Predicate
-messageEquals text = pure . (text ==) . T.toLower . D.messageText
-
-messageContains :: Text -> Predicate
-messageContains text = pure . (text `T.isInfixOf`) . T.toLower . D.messageText
+    lift . replyTo message $ defaultHelpText prefix
+                                             commandName
+                                             commandHelpText
+                                             commandArgs
+                                             mcommand
+                                             commands
 
 simpleReply :: Text -> CommandFunc
-simpleReply replyText message = replyTo message replyText
+simpleReply replyText message = lift $ replyTo message replyText
 
 addResponse :: Text -> CommandFunc
 addResponse response message = do
     updateDb (\d -> d { dbResponses = nub $ response : dbResponses d })
-    replyTo message $ "Added **" <> response <> "** to responses"
+    lift . replyTo message $ "Added **" <> response <> "** to responses"
 
 getResponses :: App [Text]
 getResponses = do
@@ -617,25 +528,31 @@ removeResponse response message = do
     if response `elem` oldResponses
         then do
             updateDb (\d -> d { dbResponses = delete response $ dbResponses d })
-            replyTo message $ "Removed **" <> response <> "** from responses"
-        else replyTo message $ "Response **" <> response <> "** not found"
+            lift
+                .  replyTo message
+                $  "Removed **"
+                <> response
+                <> "** from responses"
+        else
+            lift . replyTo message $ "Response **" <> response <> "** not found"
 
 listResponses :: CommandFunc
 listResponses message = do
     responses <- intercalate "\n" <$> getResponses
-    replyTo message responses
+    lift $ replyTo message responses
 
 setActivity :: D.ActivityType -> Maybe Text -> CommandFunc
 
 setActivity activityType Nothing message = do
     lift $ updateStatus activityType Nothing
     updateDb (\d -> d { dbActivity = Nothing })
-    replyTo message "Removed status"
+    lift $ replyTo message "Removed status"
 
 setActivity activityType (Just status) message = do
     lift $ updateStatus activityType $ Just status
     updateDb (\d -> d { dbActivity = Just (activityType, status) })
-    replyTo message
+    lift
+        $  replyTo message
         $  "Updated status to **"
         <> activityTypeText
         <> " "
@@ -653,16 +570,24 @@ setMeanness :: Maybe Int -> CommandFunc
 setMeanness (Just m) message = do
     let meanness = min 11 . max 0 $ m
     updateDb (\d -> d { dbMeanness = meanness })
-    replyTo message $ "Set meanness to **" <> T.pack (show meanness) <> "**"
+    lift
+        .  replyTo message
+        $  "Set meanness to **"
+        <> T.pack (show meanness)
+        <> "**"
 
 setMeanness Nothing message = do
     dbRef    <- asks configDb
     meanness <- liftIO $ dbMeanness <$> readTVarIO dbRef
-    replyTo message $ "Current meanness is **" <> T.pack (show meanness) <> "**"
+    lift
+        .  replyTo message
+        $  "Current meanness is **"
+        <> T.pack (show meanness)
+        <> "**"
 
 sumInts :: (Foldable t, Show a, Num a) => Maybe (t a) -> D.Message -> App ()
-sumInts (Just xs) message = replyTo message . T.pack . show $ sum xs
-sumInts Nothing   message = replyTo message . T.pack $ show (0 :: Int)
+sumInts (Just xs) message = lift . replyTo message . T.pack . show $ sum xs
+sumInts Nothing   message = lift . replyTo message . T.pack $ show (0 :: Int)
 
 updateDb :: (Db -> Db) -> App ()
 updateDb f = do

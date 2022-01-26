@@ -15,13 +15,24 @@ module Commands
     , str
     , defaultErrorText
     , defaultHelpText
+    , handleCommand
     ) where
 
+import           Control.Monad                  ( filterM )
+import           Control.Monad.Reader           ( MonadTrans
+                                                , lift
+                                                )
 import           Data.Char                      ( isSpace )
 import           Data.Foldable                  ( find )
+import           Data.Maybe
 import           Data.String                    ( IsString )
 import           Data.Text                      ( Text )
 import qualified Data.Text                     as T
+import qualified Discord                       as D
+import qualified Discord.Internal.Types        as D
+import           DiscordHelper                  ( isCommand
+                                                , replyTo
+                                                )
 import qualified Text.Parsec                   as P
 import           Text.Parsec                    ( ParseError )
 import           Text.Parsec.Text               ( Parser )
@@ -45,6 +56,9 @@ instance Applicative ArgParser where
     pure a = ArgParser [] (pure a)
     ArgParser { argParserArgs = args1, argParser = p1 } <*> ArgParser { argParserArgs = args2, argParser = p2 }
         = ArgParser { argParserArgs = args1 <> args2, argParser = p1 <*> p2 }
+
+type CommandName = Text
+type HelpText = Text
 
 arg :: Text -> Text -> Parser a -> ArgParser a
 arg name desc p = ArgParser
@@ -85,26 +99,20 @@ optMultiArg name desc p = ArgParser
     (P.spaces *> P.optionMaybe (manyArgs1 p))
 
 restStr1 :: Parser Text
-restStr1 = do
-    cs <- P.spaces *> P.many1 P.anyChar
-    return $ T.pack cs
+restStr1 = T.pack <$> (P.spaces *> P.many1 P.anyChar)
 
 int :: Parser Int
-int = do
-    d <- P.spaces *> P.many1 P.digit
-    return $ read d
+int = read <$> (P.spaces *> P.many1 P.digit)
 
 str :: Parser Text
-str = do
-    cs <- P.spaces *> P.many1 (P.satisfy (not . isSpace))
-    return $ T.pack cs
+str = T.pack <$> (P.spaces *> P.many1 (P.satisfy (not . isSpace)))
 
 manyArgs1 :: Parser a -> Parser [a]
 manyArgs1 p = P.many1 (P.spaces *> p)
 
 parseArgs
     :: Text
-    -> (command -> Text)
+    -> (command -> CommandName)
     -> (command -> ArgParser a)
     -> command
     -> Text
@@ -123,8 +131,8 @@ showUsage prefix name args =
 
 defaultHelpText
     :: Text
-    -> (command -> Text)
-    -> (command -> Text)
+    -> (command -> CommandName)
+    -> (command -> HelpText)
     -> (command -> ArgParser a)
     -> Maybe Text
     -> [command]
@@ -191,14 +199,16 @@ modifyArg (r, s) arg0 =
             Required -> arg1
             Optional -> "[" <> arg1 <> "]"
 
-defaultErrorText
-    :: Text
-    -> (command -> Text)
+type ErrorHandler command a
+    =  Text
+    -> (command -> CommandName)
     -> (command -> ArgParser a)
     -> command
     -> Text
     -> ParseError
     -> Text
+
+defaultErrorText :: ErrorHandler command a
 defaultErrorText prefix commandName commandArgs command message e =
     "```\nInvalid args:\n\n"
         <> message
@@ -209,3 +219,41 @@ defaultErrorText prefix commandName commandArgs command message e =
         <> "\n\n"
         <> showUsage prefix (commandName command) (commandArgs command)
         <> "\n```"
+
+handleCommand
+    :: (Monad (m D.DiscordHandler), MonadTrans m)
+    => Text
+    -> (command -> Text)
+    -> (command -> ArgParser a)
+    -> (a -> D.Message -> m D.DiscordHandler ())
+    -> Maybe (ErrorHandler command a)
+    -> D.Message
+    -> [command]
+    -> m D.DiscordHandler Bool
+handleCommand prefix commandName commandArgs commandHandler errorHandler message commands
+    = do
+        commandMatches <- filterM
+            (\command -> lift $ isCommand prefix (commandName command) message)
+            commands
+        case commandMatches of
+            (command : _) -> do
+                case
+                        parseArgs prefix
+                                  commandName
+                                  commandArgs
+                                  command
+                                  (D.messageText message)
+                    of
+                        Left e -> lift . replyTo message $ fromMaybe
+                            defaultErrorText
+                            errorHandler
+                            prefix
+                            commandName
+                            commandArgs
+                            command
+                            (D.messageText message)
+                            e
+                        Right cas -> commandHandler cas message
+                pure True
+            _ -> pure False
+
