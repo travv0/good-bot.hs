@@ -37,6 +37,7 @@ library
     , lens
     , mtl
     , parsec
+    , parsec3-numbers
     , random
     , stm
     , text

@@ -12,10 +12,12 @@ module Commands
     , multiArg
     , optMultiArg
     , int
+    , num
     , str
     , defaultErrorText
     , defaultHelpText
     , handleCommand
+    , customRestArg
     ) where
 
 import           Control.Monad                  ( filterM )
@@ -32,6 +34,7 @@ import           DiscordHelper                  ( isCommand
                                                 )
 import qualified Text.Parsec                   as P
 import           Text.Parsec                    ( ParseError )
+import qualified Text.Parsec.Number            as P
 import           Text.Parsec.Text               ( Parser )
 
 data ArgArity = Single | Multi
@@ -85,6 +88,11 @@ optRestArg name desc = ArgParser
     [Arg { argType = (Optional, Multi), argName = name, argDescription = desc }]
     (P.spaces *> P.optionMaybe restStr1)
 
+customRestArg :: Text -> Text -> Parser a -> ArgParser a
+customRestArg name desc p = ArgParser
+    [Arg { argType = (Required, Multi), argName = name, argDescription = desc }]
+    (P.spaces *> p)
+
 multiArg :: Text -> Text -> Parser a -> ArgParser [a]
 multiArg name desc p = ArgParser
     [Arg { argType = (Required, Multi), argName = name, argDescription = desc }]
@@ -98,8 +106,11 @@ optMultiArg name desc p = ArgParser
 restStr1 :: Parser Text
 restStr1 = T.pack <$> (P.spaces *> P.many1 P.anyChar)
 
-int :: (Read a, Integral a) => Parser a
-int = read <$> (P.spaces *> P.many1 P.digit)
+int :: Integral a => Parser a
+int = P.spaces *> P.int
+
+num :: Floating a => Parser a
+num = P.spaces *> P.floating3 False
 
 str :: Parser Text
 str = T.pack <$> (P.spaces *> P.many1 (P.satisfy (not . isSpace)))

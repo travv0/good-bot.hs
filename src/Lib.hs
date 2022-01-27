@@ -7,15 +7,18 @@ module Lib
     ) where
 
 import           Commands                       ( ArgParser
+                                                , customRestArg
                                                 , defaultHelpText
                                                 , handleCommand
                                                 , int
+                                                , num
                                                 , optArg
                                                 , optMultiArg
                                                 , optRestArg
                                                 , restArg
                                                 , str
                                                 )
+import           Control.Applicative            ( (<|>) )
 import           Control.Concurrent.STM         ( TVar
                                                 , atomically
                                                 , modifyTVar'
@@ -52,6 +55,8 @@ import           Data.Aeson                     ( (.:)
                                                 )
 import qualified Data.ByteString.Lazy          as BSL
 import           Data.Char                      ( toLower )
+import           Data.Foldable                  ( foldl' )
+import           Data.Functor                   ( ($>) )
 import           Data.List                      ( delete
                                                 , nub
                                                 , stripPrefix
@@ -96,6 +101,8 @@ import           Network.Wreq                   ( Response
 import qualified Network.Wreq                  as W
 import           System.Environment             ( getArgs )
 import           System.Random                  ( randomIO )
+import qualified Text.Parsec                   as P
+import           Text.Parsec.Text               ( Parser )
 import           Text.Read                      ( readMaybe )
 
 type App a = ReaderT Config D.DiscordHandler a
@@ -215,6 +222,7 @@ data Command
     | ListeningTo
     | CompetingIn
     | Meanness
+    | Calc
     | Sum
     | RR
     | Help
@@ -231,9 +239,44 @@ data CommandArgs
     | ListeningToArgs (Maybe Text)
     | CompetingInArgs (Maybe Text)
     | MeannessArgs (Maybe Int)
-    | SumArgs (Maybe [Integer])
+    | SumArgs (Maybe [Double])
+    | CalcArgs CalcExpr
     | HelpArgs (Maybe Text)
     deriving (Show, Eq)
+
+data CalcOp
+    = Plus
+    | Minus
+    | Times
+    | Divide
+    deriving (Show, Eq)
+
+data CalcExpr
+    = CalcExpr CalcExpr CalcOp CalcExpr
+    | CalcVal Double
+    deriving (Show, Eq)
+
+calcOp :: Parser CalcOp
+calcOp = P.spaces *> P.choice
+    [ P.char '+' $> Plus
+    , P.char '-' $> Minus
+    , P.char '*' $> Times
+    , P.char '/' $> Divide
+    ]
+
+calcExpr :: Parser CalcExpr
+calcExpr = P.spaces *> P.choice
+    [ P.try $ calcVal <* P.eof
+    , P.try $ calcParenExpr <* P.eof
+    , P.try
+    $   CalcExpr
+    <$> (P.try calcVal <|> calcParenExpr)
+    <*> calcOp
+    <*> (P.try calcExpr <|> P.try calcParenExpr <|> calcVal)
+    ]
+  where
+    calcVal       = CalcVal <$> num
+    calcParenExpr = P.spaces *> P.between (P.char '(') (P.char ')') calcExpr
 
 commandName :: Command -> Text
 commandName = T.toLower . T.pack . head . words . show
@@ -260,7 +303,12 @@ commandArgs Meanness =
                 "level"
                 "The number between 0 and 10 to set the bot's meanness to. Higher is meaner. Leave blank to view current meanness."
                 int
-commandArgs Sum = SumArgs <$> optMultiArg "nums" "Some integers to sum." int
+commandArgs Calc =
+    CalcArgs
+        <$> customRestArg "input"
+                          "Expression for calculator to evaluate."
+                          calcExpr
+commandArgs Sum = SumArgs <$> optMultiArg "nums" "Some numbers to sum." num
 commandArgs Help =
     HelpArgs <$> optArg "command" "Command to show help for." str
 
@@ -279,7 +327,8 @@ commandHelpText ListeningTo = "Set bot's activity to Listening To."
 commandHelpText CompetingIn = "Set bot's activity to Competing In."
 commandHelpText Meanness
     = "Set bot's meanness from 0-10 or display current meanness if no argument given."
-commandHelpText Sum = "Sum some integers."
+commandHelpText Calc = "A basic calculator."
+commandHelpText Sum  = "Sum some numbers."
 commandHelpText Help =
     "Show this help or show detailed help for a given command."
 
@@ -296,6 +345,7 @@ commandFunc (ListeningToArgs status) =
 commandFunc (CompetingInArgs status) =
     setActivity D.ActivityTypeCompeting status
 commandFunc (MeannessArgs meanness) = setMeanness meanness
+commandFunc (CalcArgs     xs      ) = calc xs
 commandFunc (SumArgs      xs      ) = sumInts xs
 commandFunc (HelpArgs     command ) = showHelp command
 
@@ -587,6 +637,28 @@ setMeanness Nothing message = do
         $  "Current meanness is **"
         <> T.pack (show meanness)
         <> "**"
+
+opPrecedence :: [CalcOp]
+opPrecedence = [Times, Divide, Plus, Minus]
+
+reduceOp :: CalcExpr -> CalcOp -> CalcExpr
+reduceOp expr@(CalcExpr _ o _) op | op == o = CalcVal (reduceExpr expr)
+reduceOp (CalcExpr e1 o e2) op = CalcExpr (reduceOp e1 op) o (reduceOp e2 op)
+reduceOp v _ = v
+
+reduceExpr :: CalcExpr -> Double
+reduceExpr (CalcVal v            ) = v
+reduceExpr (CalcExpr e1 Plus   e2) = reduceExpr e1 + reduceExpr e2
+reduceExpr (CalcExpr e1 Minus  e2) = reduceExpr e1 - reduceExpr e2
+reduceExpr (CalcExpr e1 Times  e2) = reduceExpr e1 * reduceExpr e2
+reduceExpr (CalcExpr e1 Divide e2) = reduceExpr e1 / reduceExpr e2
+
+calc :: CalcExpr -> D.Message -> App ()
+calc expr message =
+    lift . replyTo message . T.pack . show . reduceExpr $ foldl'
+        reduceOp
+        expr
+        opPrecedence
 
 sumInts :: (Foldable t, Show a, Num a) => Maybe (t a) -> D.Message -> App ()
 sumInts (Just xs) message = lift . replyTo message . T.pack . show $ sum xs
