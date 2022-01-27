@@ -34,7 +34,9 @@ import           DiscordHelper                  ( isCommand
                                                 , replyTo
                                                 )
 import qualified Text.Parsec                   as P
-import           Text.Parsec                    ( ParseError )
+import           Text.Parsec                    ( (<?>)
+                                                , ParseError
+                                                )
 import qualified Text.Parsec.Number            as P
 import           Text.Parsec.Text               ( Parser )
 
@@ -108,13 +110,13 @@ restStr1 :: Parser Text
 restStr1 = T.pack <$> (P.spaces *> P.many1 P.anyChar)
 
 int :: Integral a => Parser a
-int = P.spaces *> P.int
+int = (P.spaces *> P.int) <?> "integer"
 
 num :: Floating a => Parser a
-num = P.spaces *> P.floating3 False
+num = (P.spaces *> P.floating3 False) <?> "number"
 
 str :: Parser Text
-str = T.pack <$> (P.spaces *> P.many1 (P.satisfy (not . isSpace)))
+str = T.pack <$> (P.spaces *> P.many1 (P.satisfy (not . isSpace))) <?> "string"
 
 manyArgs1 :: Parser a -> Parser [a]
 manyArgs1 p = P.many1 (P.spaces *> p)

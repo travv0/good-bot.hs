@@ -1,19 +1,16 @@
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE LambdaCase #-}
 
 module Lib
     ( goodbot
     ) where
 
 import           Commands                       ( ArgParser
+                                                , customRestArg
                                                 , defaultHelpText
-                                                , defaultParseErrorText
                                                 , handleCommand
                                                 , int
-                                                , multiArg
                                                 , num
                                                 , optArg
                                                 , optMultiArg
@@ -104,8 +101,6 @@ import qualified Network.Wreq                  as W
 import           System.Environment             ( getArgs )
 import           System.Random                  ( randomIO )
 import qualified Text.Parsec                   as P
-import           Text.Parsec                    ( Parsec )
-import qualified Text.Parsec.Pos               as P
 import           Text.Parsec.Text               ( Parser )
 import           Text.Read                      ( readMaybe )
 
@@ -244,15 +239,8 @@ data CommandArgs
     | CompetingInArgs (Maybe Text)
     | MeannessArgs (Maybe Int)
     | SumArgs (Maybe [Double])
-    | CalcArgs [CalcToken]
+    | CalcArgs CalcExpr
     | HelpArgs (Maybe Text)
-    deriving (Show, Eq)
-
-data CalcToken
-    = Num Double
-    | CalcOp CalcOp
-    | OpenParen
-    | CloseParen
     deriving (Show, Eq)
 
 data CalcOp
@@ -262,68 +250,49 @@ data CalcOp
     | Divide
     deriving (Show, Eq)
 
-data CalcExpr a
-    = CalcExpr (CalcExpr a) CalcOp (CalcExpr a)
-    | CalcVal a
-    deriving (Show, Eq, Foldable)
+data CalcExpr
+    = CalcExpr CalcExpr CalcOp CalcExpr
+    | CalcVal Double
+    deriving (Show, Eq)
 
-calcToken :: Parser CalcToken
-calcToken = P.spaces *> P.choice
-    [ Num <$> num
-    , P.char '+' $> CalcOp Plus
-    , P.char '-' $> CalcOp Minus
-    , P.char '*' $> CalcOp Times
-    , P.char '/' $> CalcOp Divide
-    , P.char '(' $> OpenParen
-    , P.char ')' $> CloseParen
-    ]
-
-unwrap :: (CalcToken -> Maybe a) -> P.Parsec [CalcToken] u a
-unwrap = P.tokenPrim show (\pos _ _ -> P.updatePosChar pos 'a')
-
-satisfies :: (P.Stream s m a, Show a) => (a -> Bool) -> P.ParsecT s u m a
-satisfies f = P.tokenPrim show
-                          (\pos _ _ -> P.updatePosChar pos 'a')
-                          (\c -> if f c then Just c else Nothing)
-
-tokenNum :: P.Parsec [CalcToken] u Double
-tokenNum = unwrap
-    (\case
-        Num v -> Just v
-        _     -> Nothing
-    )
-
-tokenOp :: P.Parsec [CalcToken] u CalcOp
-tokenOp = unwrap
-    (\case
-        CalcOp v -> Just v
-        _        -> Nothing
-    )
-
-calcExpr :: Parsec [CalcToken] () (CalcExpr Double)
+calcExpr :: Parser CalcExpr
 calcExpr = calcExpr' Nothing <* P.eof
   where
-    calcExpr'
-        :: Maybe (CalcExpr Double) -> Parsec [CalcToken] () (CalcExpr Double)
+    calcExpr' :: Maybe CalcExpr -> Parser CalcExpr
+
     calcExpr' Nothing = do
+        P.spaces
         first <- single Nothing
         P.try $ calcExpr' (Just first) <|> pure first
+
     calcExpr' (Just prev) = do
+        P.spaces
         P.choice
             [ P.choice
                 [ P.try $ do
-                    op     <- tokenOp
+                    op     <- calcOp
                     second <- single Nothing
                     calcExpr' . Just $ CalcExpr prev op second
                 , P.try . single $ Just prev
                 ]
             , pure prev
             ]
-    single prev = calcVal <|> calcParenExpr prev
-    calcVal = CalcVal <$> tokenNum
+
+    single prev = P.spaces *> (calcVal <|> calcParenExpr prev)
+
+    calcVal = P.spaces *> (CalcVal <$> num)
+
     calcParenExpr prev =
-        P.between (satisfies (== OpenParen)) (satisfies (== CloseParen))
-            $ calcExpr' prev
+        P.spaces *> P.between (P.char '(') (P.char ')') (calcExpr' prev)
+
+    calcOp :: Parser CalcOp
+    calcOp = P.spaces *> P.choice
+        [ P.char '+' $> Plus
+        , P.char '-' $> Minus
+        , P.char '*' $> Times
+        , P.char '/' $> Divide
+        ]
+
 
 commandName :: Command -> Text
 commandName = T.toLower . T.pack . head . words . show
@@ -352,7 +321,9 @@ commandArgs Meanness =
                 int
 commandArgs Calc =
     CalcArgs
-        <$> multiArg "input" "Expression for calculator to evaluate." calcToken
+        <$> customRestArg "input"
+                          "Expression for calculator to evaluate."
+                          calcExpr
 commandArgs Sum = SumArgs <$> optMultiArg "nums" "Some numbers to sum." num
 commandArgs Help =
     HelpArgs <$> optArg "command" "Command to show help for." str
@@ -390,7 +361,7 @@ commandFunc (ListeningToArgs status) =
 commandFunc (CompetingInArgs status) =
     setActivity D.ActivityTypeCompeting status
 commandFunc (MeannessArgs meanness) = setMeanness meanness
-commandFunc (CalcArgs     tokens  ) = calcCmd tokens
+commandFunc (CalcArgs     expr    ) = calc expr
 commandFunc (SumArgs      xs      ) = sumInts xs
 commandFunc (HelpArgs     command ) = showHelp command
 
@@ -683,24 +654,18 @@ setMeanness Nothing message = do
         <> T.pack (show meanness)
         <> "**"
 
-reduceExpr :: CalcExpr Double -> Double
+reduceExpr :: CalcExpr -> Double
 reduceExpr (CalcVal v            ) = v
 reduceExpr (CalcExpr e1 Plus   e2) = reduceExpr e1 + reduceExpr e2
 reduceExpr (CalcExpr e1 Minus  e2) = reduceExpr e1 - reduceExpr e2
 reduceExpr (CalcExpr e1 Times  e2) = reduceExpr e1 * reduceExpr e2
 reduceExpr (CalcExpr e1 Divide e2) = reduceExpr e1 / reduceExpr e2
 
-eval :: CalcExpr Double -> Double
+eval :: CalcExpr -> Double
 eval = reduceExpr
 
-calc :: CalcExpr Double -> CommandFunc
+calc :: CalcExpr -> CommandFunc
 calc expr message = lift . replyTo message . T.pack . show . eval $ expr
-
-calcCmd :: [CalcToken] -> CommandFunc
-calcCmd tokens message = case P.parse calcExpr "" tokens of
-    Right expr -> calc expr message
-    Left e ->
-        lift . replyTo message $ defaultParseErrorText (D.messageText message) e
 
 sumInts :: (Foldable t, Show a, Num a) => Maybe (t a) -> CommandFunc
 sumInts (Just xs) message = lift . replyTo message . T.pack . show $ sum xs
