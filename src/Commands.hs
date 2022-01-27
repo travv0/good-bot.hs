@@ -14,7 +14,8 @@ module Commands
     , int
     , num
     , str
-    , defaultErrorText
+    , defaultArgErrorText
+    , defaultParseErrorText
     , defaultHelpText
     , handleCommand
     , customRestArg
@@ -216,14 +217,18 @@ type ErrorHandler command a
     -> ParseError
     -> Text
 
-defaultErrorText :: ErrorHandler command a
-defaultErrorText prefix commandName commandArgs command message e =
-    "```\nInvalid args:\n\n"
-        <> message
+defaultParseErrorText :: Text -> ParseError -> Text
+defaultParseErrorText message e =
+    message
         <> "\n"
         <> T.pack (replicate (P.sourceColumn (P.errorPos e) - 1) ' ')
         <> "^\n\n"
         <> T.pack (show e)
+
+defaultArgErrorText :: ErrorHandler command a
+defaultArgErrorText prefix commandName commandArgs command message e =
+    "```\nInvalid args:\n\n"
+        <> defaultParseErrorText message e
         <> "\n\n"
         <> showUsage prefix (commandName command) (commandArgs command)
         <> "\n```"
@@ -252,7 +257,7 @@ handleCommand prefix commandName commandArgs commandHandler errorHandler message
                                   (D.messageText message)
                     of
                         Left e -> replyTo message $ fromMaybe
-                            defaultErrorText
+                            defaultArgErrorText
                             errorHandler
                             prefix
                             commandName
