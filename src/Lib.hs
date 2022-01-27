@@ -13,7 +13,6 @@ import           Commands                       ( ArgParser
                                                 , int
                                                 , num
                                                 , optArg
-                                                , optMultiArg
                                                 , optRestArg
                                                 , restArg
                                                 , str
@@ -222,7 +221,6 @@ data Command
     | CompetingIn
     | Meanness
     | Calc
-    | Sum
     | RR
     | Help
     deriving (Show, Eq, Enum, Bounded)
@@ -238,7 +236,6 @@ data CommandArgs
     | ListeningToArgs (Maybe Text)
     | CompetingInArgs (Maybe Text)
     | MeannessArgs (Maybe Int)
-    | SumArgs (Maybe [Double])
     | CalcArgs CalcExpr
     | HelpArgs (Maybe Text)
     deriving (Show, Eq)
@@ -324,7 +321,6 @@ commandArgs Calc =
         <$> customRestArg "input"
                           "Expression for calculator to evaluate."
                           calcExpr
-commandArgs Sum = SumArgs <$> optMultiArg "nums" "Some numbers to sum." num
 commandArgs Help =
     HelpArgs <$> optArg "command" "Command to show help for." str
 
@@ -344,7 +340,6 @@ commandHelpText CompetingIn = "Set bot's activity to Competing In."
 commandHelpText Meanness
     = "Set bot's meanness from 0-10 or display current meanness if no argument given."
 commandHelpText Calc = "A basic calculator."
-commandHelpText Sum  = "Sum some numbers."
 commandHelpText Help =
     "Show this help or show detailed help for a given command."
 
@@ -362,7 +357,6 @@ commandFunc (CompetingInArgs status) =
     setActivity D.ActivityTypeCompeting status
 commandFunc (MeannessArgs meanness) = setMeanness meanness
 commandFunc (CalcArgs     expr    ) = calc expr
-commandFunc (SumArgs      xs      ) = sumInts xs
 commandFunc (HelpArgs     command ) = showHelp command
 
 commands :: [Command]
@@ -666,10 +660,6 @@ eval = reduceExpr
 
 calc :: CalcExpr -> CommandFunc
 calc expr message = lift . replyTo message . T.pack . show . eval $ expr
-
-sumInts :: (Foldable t, Show a, Num a) => Maybe (t a) -> CommandFunc
-sumInts (Just xs) message = lift . replyTo message . T.pack . show $ sum xs
-sumInts Nothing   message = lift . replyTo message . T.pack $ show (0 :: Int)
 
 updateDb :: (Db -> Db) -> App ()
 updateDb f = do
