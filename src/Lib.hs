@@ -54,7 +54,10 @@ import           Data.Aeson                     ( (.:)
                                                 )
 import qualified Data.ByteString.Lazy          as BSL
 import           Data.Char                      ( toLower )
-import           Data.Functor                   ( ($>) )
+import           Data.Fixed                     ( mod' )
+import           Data.Functor                   ( ($>)
+                                                , (<&>)
+                                                )
 import           Data.List                      ( delete
                                                 , nub
                                                 , stripPrefix
@@ -88,6 +91,7 @@ import           DiscordHelper                  ( Predicate
                                                 , (|||)
                                                 )
 import           GHC.Generics                   ( Generic )
+import           Math.Gamma                     ( gamma )
 import           Network.Wreq                   ( Response
                                                 , defaults
                                                 , get
@@ -98,7 +102,9 @@ import           Network.Wreq                   ( Response
                                                 )
 import qualified Network.Wreq                  as W
 import           System.Environment             ( getArgs )
-import           System.Random                  ( randomIO )
+import           System.Random                  ( randomIO
+                                                , randomRIO
+                                                )
 import qualified Text.Parsec                   as P
 import           Text.Parsec.Text               ( Parser )
 import           Text.Read                      ( readMaybe )
@@ -240,56 +246,160 @@ data CommandArgs
     | HelpArgs (Maybe Text)
     deriving (Show, Eq)
 
-data CalcOp
+data BinaryOp
     = Plus
     | Minus
     | Times
     | Divide
+    | Exponent
+    | Mod
+    deriving (Show, Eq)
+
+data PrefixOp
+    = Sqrt
+    | Cbrt
+    | Log
+    | Ln
+    | Sin
+    | Cos
+    | Tan
+    | Sinh
+    | Cosh
+    | Tanh
+    | Abs
+    | Round
+    | Floor
+    | Ceil
+    | Degrees
+    | Radians
+    | Neg
+    | Fact
+    | RandFloat
+    | RandInt
+    | Rand
+    deriving (Show, Eq)
+
+data SuffixOp
+    = Percent
+    | Factorial
+    | DoubleFactorial
     deriving (Show, Eq)
 
 data CalcExpr
-    = CalcExpr CalcExpr CalcOp CalcExpr
+    = CalcBinary CalcExpr BinaryOp CalcExpr
+    | CalcPrefix PrefixOp CalcExpr
+    | CalcSuffix CalcExpr SuffixOp
     | CalcVal Double
     deriving (Show, Eq)
 
+precedence :: BinaryOp -> Int
+precedence Plus     = 2
+precedence Minus    = 2
+precedence Times    = 3
+precedence Divide   = 3
+precedence Mod      = 3
+precedence Exponent = 8
+
 calcExpr :: Parser CalcExpr
 calcExpr = calcExpr' Nothing <* P.eof
-  where
-    calcExpr' :: Maybe CalcExpr -> Parser CalcExpr
 
-    calcExpr' Nothing = do
-        P.spaces
-        first <- single Nothing
-        P.try $ calcExpr' (Just first) <|> pure first
+calcExpr' :: Maybe CalcExpr -> Parser CalcExpr
 
-    calcExpr' (Just prev) = do
-        P.spaces
-        P.choice
-            [ P.choice
-                [ P.try $ do
-                    op     <- calcOp
-                    second <- single Nothing
-                    calcExpr' . Just $ CalcExpr prev op second
-                , P.try . single $ Just prev
-                ]
-            , pure prev
-            ]
+calcExpr' Nothing = do
+    P.spaces
+    lhs <- single
+    calcExpr' (Just lhs) <|> pure lhs
 
-    single prev = P.spaces *> (calcVal <|> calcParenExpr prev)
+calcExpr' (Just lhs) = binaryExpr lhs <|> pure lhs
 
-    calcVal = P.spaces *> (CalcVal <$> num)
+valExpr :: Parser CalcExpr
+valExpr = P.try $ do
+    v      <- value <|> parenExpr Nothing
+    suffix <- P.optionMaybe (P.try suffixOp)
+    case suffix of
+        Just op -> calcExpr' (Just (CalcSuffix v op))
+        Nothing -> pure v
 
-    calcParenExpr prev =
-        P.spaces *> P.between (P.char '(') (P.char ')') (calcExpr' prev)
+prefixExpr :: Parser CalcExpr
+prefixExpr = do
+    P.spaces
+    CalcPrefix <$> prefixOp <*> (valExpr <|> parenExpr Nothing)
 
-    calcOp :: Parser CalcOp
-    calcOp = P.spaces *> P.choice
+single :: Parser CalcExpr
+single = P.spaces *> (valExpr <|> prefixExpr <|> parenExpr Nothing)
+
+value :: Parser CalcExpr
+value = do
+    P.spaces
+    CalcVal <$> P.choice [P.char 'e' $> exp 1, P.string "pi" $> pi, num]
+
+parenExpr :: Maybe CalcExpr -> Parser CalcExpr
+parenExpr lhs = P.spaces *> P.between
+    (P.char '(')
+    (P.char ')')
+    (P.spaces *> calcExpr' lhs <* P.spaces)
+
+binaryExpr :: CalcExpr -> Parser CalcExpr
+binaryExpr lhs = do
+    op <- binaryOp
+    let p = precedence op
+    rhs    <- single
+    nextOp <- P.lookAhead (P.optionMaybe binaryOp)
+    let nextPrecIsHigher = maybe False (\nop -> precedence nop > p) nextOp
+    if nextPrecIsHigher
+        then CalcBinary lhs op <$> calcExpr' (Just rhs)
+        else calcExpr' (Just (CalcBinary lhs op rhs))
+
+binaryOp :: Parser BinaryOp
+binaryOp = P.spaces *> P.choice
+    (map
+        P.try
         [ P.char '+' $> Plus
         , P.char '-' $> Minus
         , P.char '*' $> Times
         , P.char '/' $> Divide
+        , P.string "mod" $> Mod
+        , P.char '^' $> Exponent
         ]
+    )
 
+prefixOp :: Parser PrefixOp
+prefixOp = P.spaces *> P.choice
+    (map
+        P.try
+        [ P.string "sqrt" $> Sqrt
+        , P.string "cbrt" $> Cbrt
+        , P.string "log" $> Log
+        , P.string "ln" $> Ln
+        , P.string "sinh" $> Sinh
+        , P.string "cosh" $> Cosh
+        , P.string "tanh" $> Tanh
+        , P.string "sin" $> Sin
+        , P.string "cos" $> Cos
+        , P.string "tan" $> Tan
+        , P.string "abs" $> Abs
+        , P.string "round" $> Round
+        , P.string "floor" $> Floor
+        , P.string "ceil" $> Ceil
+        , P.string "degrees" $> Degrees
+        , P.string "radians" $> Radians
+        , P.char '-' $> Neg
+        , P.string "fact" $> Fact
+        , P.string "randf" $> RandFloat
+        , P.string "randi" $> RandInt
+        , P.string "rand" $> Rand
+        ]
+    )
+
+suffixOp :: Parser SuffixOp
+suffixOp = P.spaces *> P.choice
+    (map
+        P.try
+        [ P.char '%' $> Percent
+        , P.char '!' $> Factorial
+        , P.string "!!" $> Factorial
+        ]
+    )
 
 commandName :: Command -> Text
 commandName = T.toLower . T.pack . head . words . show
@@ -648,18 +758,73 @@ setMeanness Nothing message = do
         <> T.pack (show meanness)
         <> "**"
 
-reduceExpr :: CalcExpr -> Double
-reduceExpr (CalcVal v            ) = v
-reduceExpr (CalcExpr e1 Plus   e2) = reduceExpr e1 + reduceExpr e2
-reduceExpr (CalcExpr e1 Minus  e2) = reduceExpr e1 - reduceExpr e2
-reduceExpr (CalcExpr e1 Times  e2) = reduceExpr e1 * reduceExpr e2
-reduceExpr (CalcExpr e1 Divide e2) = reduceExpr e1 / reduceExpr e2
+reduceExpr :: CalcExpr -> IO Double
+reduceExpr (CalcVal v              ) = pure v
 
-eval :: CalcExpr -> Double
+reduceExpr (CalcBinary e1 Plus   e2) = (+) <$> reduceExpr e1 <*> reduceExpr e2
+reduceExpr (CalcBinary e1 Minus  e2) = (-) <$> reduceExpr e1 <*> reduceExpr e2
+reduceExpr (CalcBinary e1 Times  e2) = (*) <$> reduceExpr e1 <*> reduceExpr e2
+reduceExpr (CalcBinary e1 Divide e2) = (/) <$> reduceExpr e1 <*> reduceExpr e2
+reduceExpr (CalcBinary e1 Exponent e2) =
+    (**) <$> reduceExpr e1 <*> reduceExpr e2
+reduceExpr (CalcBinary e1 Mod e2) = mod' <$> reduceExpr e1 <*> reduceExpr e2
+
+reduceExpr (CalcPrefix Sqrt e   ) = sqrt <$> reduceExpr e
+reduceExpr (CalcPrefix Cbrt e   ) = (**) <$> reduceExpr e <*> pure (1 / 3)
+reduceExpr (CalcPrefix Log  e   ) = logBase 10 <$> reduceExpr e
+reduceExpr (CalcPrefix Ln   e   ) = log <$> reduceExpr e
+reduceExpr (CalcPrefix Sin  e   ) = sin <$> reduceExpr e
+reduceExpr (CalcPrefix Cos  e   ) = cos <$> reduceExpr e
+reduceExpr (CalcPrefix Tan  e   ) = tan <$> reduceExpr e
+reduceExpr (CalcPrefix Sinh e   ) = sinh <$> reduceExpr e
+reduceExpr (CalcPrefix Cosh e   ) = cosh <$> reduceExpr e
+reduceExpr (CalcPrefix Tanh e   ) = tanh <$> reduceExpr e
+reduceExpr (CalcPrefix Abs  e   ) = abs <$> reduceExpr e
+reduceExpr (CalcPrefix Round e) =
+    fromIntegral . (round :: Double -> Integer) <$> reduceExpr e
+reduceExpr (CalcPrefix Floor e) =
+    fromIntegral . (floor :: Double -> Integer) <$> reduceExpr e
+reduceExpr (CalcPrefix Ceil e) =
+    fromIntegral . (ceiling :: Double -> Integer) <$> reduceExpr e
+reduceExpr (CalcPrefix Degrees e) = do
+    v <- reduceExpr e
+    pure $ v * 180 / pi
+reduceExpr (CalcPrefix Radians e) = do
+    v <- reduceExpr e
+    pure $ v * pi / 180
+reduceExpr (CalcPrefix Neg       e) = negate <$> reduceExpr e
+reduceExpr (CalcPrefix Fact      e) = factorial <$> reduceExpr e
+reduceExpr (CalcPrefix RandFloat e) = randf =<< reduceExpr e
+reduceExpr (CalcPrefix RandInt   e) = randi =<< reduceExpr e
+reduceExpr (CalcPrefix Rand      e) = do
+    n <- reduceExpr e
+    if n == fromIntegral (round n :: Integer) then randi n else randf n
+
+reduceExpr (CalcSuffix e Percent        ) = reduceExpr e <&> (* 0.01)
+reduceExpr (CalcSuffix e Factorial      ) = factorial <$> reduceExpr e
+reduceExpr (CalcSuffix e DoubleFactorial) = doubleFactorial <$> reduceExpr e
+
+factorial :: Double -> Double
+factorial n = gamma $ n + 1
+
+randf :: Double -> IO Double
+randf n = randomRIO (0, n)
+
+randi :: Double -> IO Double
+randi n = fromIntegral <$> randomRIO (0, round n :: Integer)
+
+doubleFactorial :: Double -> Double
+doubleFactorial n =
+    let k = n / 2
+    in  factorial k * 2 ** k * (pi / 2) ** (1 / 4 * (-1 + cos (n * pi)))
+
+eval :: CalcExpr -> IO Double
 eval = reduceExpr
 
 calc :: CalcExpr -> CommandFunc
-calc expr message = lift . replyTo message . T.pack . show . eval $ expr
+calc expr message = do
+    result <- liftIO $ eval expr
+    lift . replyTo message . T.pack . show $ result
 
 updateDb :: (Db -> Db) -> App ()
 updateDb f = do
