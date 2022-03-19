@@ -100,18 +100,18 @@ single = (P.try valExpr <|> P.try prefixExpr <|> parenExpr) <* P.spaces
 
 constant :: Parser Double
 constant =
-    (P.choice [P.char 'e' $> exp 1, P.try $ P.string "pi" $> pi] <?> "constant")
-        <* P.spaces
+    P.choice [P.char 'e' $> exp 1, P.try $ P.string "pi" $> pi]
+        <*  P.spaces
+        <?> "constant"
 
 value :: Parser CalcExpr
 value = CalcVal <$> (constant <|> num) <* P.spaces
 
 parenExpr :: Parser CalcExpr
 parenExpr =
-    (   P.between (P.char '(') (P.char ')') (P.spaces *> calcExpr' Nothing)
+    P.between (P.char '(') (P.char ')') (P.spaces *> calcExpr' Nothing)
+        <*  P.spaces
         <?> "parenthesized expression"
-        )
-        <* P.spaces
 
 binaryExpr :: CalcExpr -> Parser CalcExpr
 binaryExpr lhs = do
@@ -128,66 +128,63 @@ binaryExpr lhs = do
 
 binaryOp :: Parser BinaryOp
 binaryOp =
-    (   P.choice
-                (map
-                    P.try
-                    [ P.char '+' $> Plus
-                    , P.char '-' $> Minus
-                    , P.char '*' $> Times
-                    , P.char '/' $> Divide
-                    , P.string "mod" $> Mod
-                    , P.char '^' $> Exponent
-                    ]
-                )
+    P.choice
+            (map
+                P.try
+                [ P.char '+' $> Plus
+                , P.char '-' $> Minus
+                , P.char '*' $> Times
+                , P.char '/' $> Divide
+                , P.string "mod" $> Mod
+                , P.char '^' $> Exponent
+                ]
+            )
+        <*  P.spaces
         <?> "operator"
-        )
-        <* P.spaces
 
 prefixOp :: Parser PrefixOp
 prefixOp =
-    (   P.choice
-                (map
-                    P.try
-                    [ P.string "sqrt" $> Sqrt
-                    , P.string "cbrt" $> Cbrt
-                    , P.string "log" $> Log
-                    , P.string "ln" $> Ln
-                    , P.string "sinh" $> Sinh
-                    , P.string "cosh" $> Cosh
-                    , P.string "tanh" $> Tanh
-                    , P.string "sin" $> Sin
-                    , P.string "cos" $> Cos
-                    , P.string "tan" $> Tan
-                    , P.string "abs" $> Abs
-                    , P.string "round" $> Round
-                    , P.string "floor" $> Floor
-                    , P.string "ceil" $> Ceil
-                    , P.string "degrees" $> Degrees
-                    , P.string "radians" $> Radians
-                    , P.char '-' $> Neg
-                    , P.string "fact" $> Fact
-                    , P.string "randf" $> RandFloat
-                    , P.string "randi" $> RandInt
-                    , P.string "rand" $> Rand
-                    ]
-                )
+    P.choice
+            (map
+                P.try
+                [ P.string "sqrt" $> Sqrt
+                , P.string "cbrt" $> Cbrt
+                , P.string "log" $> Log
+                , P.string "ln" $> Ln
+                , P.string "sinh" $> Sinh
+                , P.string "cosh" $> Cosh
+                , P.string "tanh" $> Tanh
+                , P.string "sin" $> Sin
+                , P.string "cos" $> Cos
+                , P.string "tan" $> Tan
+                , P.string "abs" $> Abs
+                , P.string "round" $> Round
+                , P.string "floor" $> Floor
+                , P.string "ceil" $> Ceil
+                , P.string "degrees" $> Degrees
+                , P.string "radians" $> Radians
+                , P.char '-' $> Neg
+                , P.string "fact" $> Fact
+                , P.string "randf" $> RandFloat
+                , P.string "randi" $> RandInt
+                , P.string "rand" $> Rand
+                ]
+            )
+        <*  (P.skipMany1 P.space <|> P.lookAhead (P.char '(') *> P.spaces)
         <?> "function"
-        )
-        <* P.spaces
 
 suffixOp :: Parser SuffixOp
 suffixOp =
-    (   P.choice
-                (map
-                    P.try
-                    [ P.char '%' $> Percent
-                    , P.char '!' $> Factorial
-                    , P.string "!!" $> Factorial
-                    ]
-                )
+    P.choice
+            (map
+                P.try
+                [ P.char '%' $> Percent
+                , P.char '!' $> Factorial
+                , P.string "!!" $> Factorial
+                ]
+            )
+        <*  P.spaces
         <?> "suffix"
-        )
-        <* P.spaces
 
 reduceExpr :: CalcExpr -> IO Double
 reduceExpr (CalcVal v              ) = pure v

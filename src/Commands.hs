@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Commands
     ( ArgParser
@@ -24,6 +25,7 @@ module Commands
 import           Control.Monad                  ( filterM )
 import           Data.Char                      ( isSpace )
 import           Data.Foldable                  ( find )
+import           Data.Functor                   ( ($>) )
 import           Data.Maybe
 import           Data.String                    ( IsString )
 import           Data.Text                      ( Text )
@@ -112,8 +114,13 @@ restStr1 = T.pack <$> (P.spaces *> P.many1 P.anyChar)
 int :: Integral a => Parser a
 int = (P.spaces *> P.int) <?> "integer"
 
-num :: Floating a => Parser a
-num = (P.spaces *> P.floating3 False) <?> "number"
+num :: forall a . Floating a => Parser a
+num =
+    P.spaces
+        *>  P.option id (P.char '-' $> negate)
+        <*> (P.floating3 False <?> "number")
+
+
 
 str :: Parser Text
 str = T.pack <$> (P.spaces *> P.many1 (P.satisfy (not . isSpace))) <?> "string"
