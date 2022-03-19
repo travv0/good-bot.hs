@@ -38,8 +38,7 @@ library
     , gamma
     , lens
     , mtl
-    , parsec
-    , parsec3-numbers
+    , megaparsec
     , random
     , stm
     , text

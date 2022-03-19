@@ -1,10 +1,15 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Calculator
     ( CalcExpr
     , eval
     , calcExpr
     ) where
 
-import           Commands                       ( num )
+import           Commands                       ( Parser
+                                                , int
+                                                , num
+                                                )
 import           Control.Applicative            ( (<|>) )
 import           Data.Fixed                     ( mod' )
 import           Data.Functor                   ( ($>)
@@ -12,9 +17,9 @@ import           Data.Functor                   ( ($>)
                                                 )
 import           Math.Gamma                     ( gamma )
 import           System.Random                  ( randomRIO )
-import qualified Text.Parsec                   as P
-import           Text.Parsec                    ( (<?>) )
-import           Text.Parsec.Text               ( Parser )
+import qualified Text.Megaparsec               as P
+import           Text.Megaparsec                ( (<?>) )
+import qualified Text.Megaparsec.Char          as P
 
 data BinaryOp
     = Plus
@@ -71,46 +76,47 @@ precedence Mod      = 3
 precedence Exponent = 8
 
 calcExpr :: Parser CalcExpr
-calcExpr = P.spaces *> calcExpr' Nothing <* P.eof
+calcExpr = P.space *> calcExpr' Nothing <* P.eof
 
 calcExpr' :: Maybe CalcExpr -> Parser CalcExpr
 
 calcExpr' Nothing = do
     lhs <- single
-    (calcExpr' (Just lhs) <|> pure lhs) <* P.spaces
+    (calcExpr' (Just lhs) <|> pure lhs) <* P.space
 
-calcExpr' (Just lhs) = (binaryExpr lhs <|> pure lhs) <* P.spaces
+calcExpr' (Just lhs) = (binaryExpr lhs <|> pure lhs) <* P.space
 
 valExpr :: Parser CalcExpr
 valExpr = do
     v      <- value <|> parenExpr
-    suffix <- P.optionMaybe (P.try suffixOp)
+    suffix <- P.optional (P.try suffixOp)
     (case suffix of
             Just op -> calcExpr' (Just (CalcSuffix v op))
             Nothing -> pure v
         )
-        <* P.spaces
+        <* P.space
 
 prefixExpr :: Parser CalcExpr
 prefixExpr =
-    CalcPrefix <$> prefixOp <*> (P.try valExpr <|> parenExpr) <* P.spaces
+    CalcPrefix <$> prefixOp <*> (P.try valExpr <|> parenExpr) <* P.space
 
 single :: Parser CalcExpr
-single = (P.try valExpr <|> P.try prefixExpr <|> parenExpr) <* P.spaces
+single = (P.try valExpr <|> P.try prefixExpr <|> parenExpr) <* P.space
 
 constant :: Parser Double
 constant =
     P.choice [P.char 'e' $> exp 1, P.try $ P.string "pi" $> pi]
-        <*  P.spaces
+        <*  P.space
         <?> "constant"
 
 value :: Parser CalcExpr
-value = CalcVal <$> (constant <|> num) <* P.spaces
+value =
+    CalcVal <$> (constant <|> ((P.try num <|> int) <?> "number")) <* P.space
 
 parenExpr :: Parser CalcExpr
 parenExpr =
-    P.between (P.char '(') (P.char ')') (P.spaces *> calcExpr' Nothing)
-        <*  P.spaces
+    P.between (P.char '(') (P.char ')') (P.space *> calcExpr' Nothing)
+        <*  P.space
         <?> "parenthesized expression"
 
 binaryExpr :: CalcExpr -> Parser CalcExpr
@@ -118,13 +124,13 @@ binaryExpr lhs = do
     op <- binaryOp
     let p = precedence op
     rhs    <- single
-    nextOp <- P.lookAhead (P.optionMaybe binaryOp)
+    nextOp <- P.lookAhead (P.optional binaryOp)
     let nextPrecIsHigher = maybe False (\nop -> precedence nop > p) nextOp
     (if nextPrecIsHigher
             then CalcBinary lhs op <$> calcExpr' (Just rhs)
             else calcExpr' (Just (CalcBinary lhs op rhs))
         )
-        <* P.spaces
+        <* P.space
 
 binaryOp :: Parser BinaryOp
 binaryOp =
@@ -139,7 +145,7 @@ binaryOp =
                 , P.char '^' $> Exponent
                 ]
             )
-        <*  P.spaces
+        <*  P.space
         <?> "operator"
 
 prefixOp :: Parser PrefixOp
@@ -170,7 +176,8 @@ prefixOp =
                 , P.string "rand" $> Rand
                 ]
             )
-        <*  (P.skipMany1 P.space <|> P.lookAhead (P.char '(') *> P.spaces)
+        <*  P.try (P.space1 <|> P.lookAhead (P.char '(' $> ()))
+        <*  P.space
         <?> "function"
 
 suffixOp :: Parser SuffixOp
@@ -183,7 +190,7 @@ suffixOp =
                 , P.string "!!" $> Factorial
                 ]
             )
-        <*  P.spaces
+        <*  P.space
         <?> "suffix"
 
 reduceExpr :: CalcExpr -> IO Double

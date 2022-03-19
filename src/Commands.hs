@@ -5,6 +5,7 @@
 
 module Commands
     ( ArgParser
+    , Parser
     , parseArgs
     , arg
     , optArg
@@ -30,17 +31,21 @@ import           Data.Maybe
 import           Data.String                    ( IsString )
 import           Data.Text                      ( Text )
 import qualified Data.Text                     as T
+import           Data.Void                      ( Void )
 import qualified Discord                       as D
 import qualified Discord.Internal.Types        as D
 import           DiscordHelper                  ( isCommand
                                                 , replyTo
                                                 )
-import qualified Text.Parsec                   as P
-import           Text.Parsec                    ( (<?>)
-                                                , ParseError
+import qualified Text.Megaparsec               as P
+import           Text.Megaparsec                ( (<?>)
+                                                , ParseErrorBundle
+                                                , Parsec
                                                 )
-import qualified Text.Parsec.Number            as P
-import           Text.Parsec.Text               ( Parser )
+import qualified Text.Megaparsec.Char          as P
+import qualified Text.Megaparsec.Char.Lexer    as PL
+
+type Parser = Parsec Void Text
 
 data ArgArity = Single | Multi
 data ArgReq = Required | Optional
@@ -72,7 +77,7 @@ arg name desc p = ArgParser
           , argDescription = desc
           }
     ]
-    (P.spaces *> p)
+    (P.space *> p)
 
 optArg :: Text -> Text -> Parser a -> ArgParser (Maybe a)
 optArg name desc p = ArgParser
@@ -81,52 +86,51 @@ optArg name desc p = ArgParser
           , argDescription = desc
           }
     ]
-    (P.spaces *> P.optionMaybe p)
+    (P.space *> P.optional p)
 
 restArg :: Text -> Text -> ArgParser Text
 restArg name desc = ArgParser
     [Arg { argType = (Required, Multi), argName = name, argDescription = desc }]
-    (P.spaces *> restStr1)
+    (P.space *> restStr1)
 
 optRestArg :: Text -> Text -> ArgParser (Maybe Text)
 optRestArg name desc = ArgParser
     [Arg { argType = (Optional, Multi), argName = name, argDescription = desc }]
-    (P.spaces *> P.optionMaybe restStr1)
+    (P.space *> P.optional restStr1)
 
 customRestArg :: Text -> Text -> Parser a -> ArgParser a
 customRestArg name desc p = ArgParser
     [Arg { argType = (Required, Multi), argName = name, argDescription = desc }]
-    (P.spaces *> p)
+    (P.space *> p)
 
 multiArg :: Text -> Text -> Parser a -> ArgParser [a]
 multiArg name desc p = ArgParser
     [Arg { argType = (Required, Multi), argName = name, argDescription = desc }]
-    (P.spaces *> manyArgs1 p)
+    (P.space *> manyArgs1 p)
 
 optMultiArg :: Text -> Text -> Parser a -> ArgParser (Maybe [a])
 optMultiArg name desc p = ArgParser
     [Arg { argType = (Optional, Multi), argName = name, argDescription = desc }]
-    (P.spaces *> P.optionMaybe (manyArgs1 p))
+    (P.space *> P.optional (manyArgs1 p))
 
 restStr1 :: Parser Text
-restStr1 = T.pack <$> (P.spaces *> P.many1 P.anyChar)
+restStr1 = T.pack <$> (P.space *> P.some P.anySingle)
 
-int :: Integral a => Parser a
-int = (P.spaces *> P.int) <?> "integer"
+possiblyNegative :: Num a => Parser a -> String -> Parser a
+possiblyNegative p label =
+    P.space *> (P.option id (P.char '-' $> negate) <*> (p <?> label) <?> label)
 
-num :: forall a . Floating a => Parser a
-num =
-    P.spaces
-        *>  P.option id (P.char '-' $> negate)
-        <*> (P.floating3 False <?> "number")
+int :: Num a => Parser a
+int = possiblyNegative PL.decimal "integer"
 
-
+num :: RealFloat a => Parser a
+num = possiblyNegative PL.float "num"
 
 str :: Parser Text
-str = T.pack <$> (P.spaces *> P.many1 (P.satisfy (not . isSpace))) <?> "string"
+str = T.pack <$> (P.space *> P.some (P.satisfy (not . isSpace))) <?> "string"
 
 manyArgs1 :: Parser a -> Parser [a]
-manyArgs1 p = P.many1 (P.spaces *> p)
+manyArgs1 p = P.some (P.space *> p)
 
 parseArgs
     :: Text
@@ -134,10 +138,10 @@ parseArgs
     -> (command -> ArgParser a)
     -> command
     -> Text
-    -> Either ParseError a
+    -> Either (ParseErrorBundle Text Void) a
 parseArgs prefix commandName commandArgs command = P.parse
-    (  P.string (T.unpack prefix)
-    *> P.string (T.unpack $ commandName command)
+    (  P.string prefix
+    *> P.string (commandName command)
     *> argParser (commandArgs command)
     <* P.eof
     )
@@ -223,22 +227,18 @@ type ErrorHandler command a
     -> (command -> ArgParser a)
     -> command
     -> Text
-    -> ParseError
+    -> ParseErrorBundle Text Void
     -> Text
 
-defaultParseErrorText :: Text -> ParseError -> Text
+defaultParseErrorText :: Text -> ParseErrorBundle Text Void -> Text
 defaultParseErrorText message e =
-    message
-        <> "\n"
-        <> T.pack (replicate (P.sourceColumn (P.errorPos e) - 1) ' ')
-        <> "^\n\n"
-        <> T.pack (show e)
+    message <> "\n\n" <> T.pack (P.errorBundlePretty e)
 
 defaultArgErrorText :: ErrorHandler command a
 defaultArgErrorText prefix commandName commandArgs command message e =
     "```\nInvalid args:\n\n"
         <> defaultParseErrorText message e
-        <> "\n\n"
+        <> "\n"
         <> showUsage prefix (commandName command) (commandArgs command)
         <> "\n```"
 
