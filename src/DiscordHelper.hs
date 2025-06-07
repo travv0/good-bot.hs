@@ -32,15 +32,16 @@ import qualified Data.Text                     as T
 import qualified Discord                       as D
 import qualified Discord.Handle                as D
 import qualified Discord.Internal.Rest         as D
+import qualified Discord.Types                 as D
 import qualified Discord.Requests              as D
 
 updateStatus :: D.ActivityType -> Maybe Text -> D.DiscordHandler ()
 updateStatus activityType mactivity =
     D.sendCommand $ D.UpdateStatus $ D.UpdateStatusOpts
         { D.updateStatusOptsSince     = Nothing
-        , D.updateStatusOptsGame      = case mactivity of
-            Just activity -> Just $ D.Activity activity activityType Nothing
-            Nothing       -> Nothing
+        , D.updateStatusOptsActivities = case mactivity of
+            Just activity -> [D.Activity activity activityType Nothing]
+            Nothing       -> []
         , D.updateStatusOptsNewStatus = D.UpdateStatusOnline
         , D.updateStatusOptsAFK       = False
         }
@@ -67,7 +68,7 @@ isFromSelf message = do
     pure $ D.userId (D.cacheCurrentUser cache) == D.userId
         (D.messageAuthor message)
 
-isFromUser :: D.UserId -> Predicate
+isFromUser :: D.Snowflake -> Predicate
 isFromUser userId message = pure $ D.userId (D.messageAuthor message) == userId
 
 isFromBot :: Predicate
@@ -86,13 +87,13 @@ isCommand prefix command message = do
 
 messageStartsWith :: Text -> Predicate
 messageStartsWith text =
-    pure . (text `T.isPrefixOf`) . T.toLower . D.messageText
+    pure . (text `T.isPrefixOf`) . T.toLower . D.messageContent
 
 messageEquals :: Text -> Predicate
-messageEquals text = pure . (text ==) . T.toLower . D.messageText
+messageEquals text = pure . (text ==) . T.toLower . D.messageContent
 
 messageContains :: Text -> Predicate
-messageContains text = pure . (text `T.isInfixOf`) . T.toLower . D.messageText
+messageContains text = pure . (text `T.isInfixOf`) . T.toLower . D.messageContent
 
 writeLog :: Text -> D.DiscordHandler ()
 writeLog l = do
@@ -113,7 +114,7 @@ restCall request = do
 
 replyTo :: D.Message -> Text -> D.DiscordHandler ()
 replyTo replyingTo =
-    createMessage (D.messageChannel replyingTo) (Just $ D.messageId replyingTo)
+    createMessage (D.messageChannelId replyingTo) (Just $ D.messageId replyingTo)
 
 createMessage
     :: D.ChannelId -> Maybe D.MessageId -> Text -> D.DiscordHandler ()
@@ -132,7 +133,7 @@ createMessage channelId replyingToId message =
                     replyingToId
                 }
 
-createGuildBan :: D.GuildId -> D.UserId -> Text -> D.DiscordHandler ()
+createGuildBan :: D.GuildId -> D.Snowflake -> Text -> D.DiscordHandler ()
 createGuildBan guildId userId banMessage = restCall $ D.CreateGuildBan
     guildId
     userId

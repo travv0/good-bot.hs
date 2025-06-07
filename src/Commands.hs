@@ -20,6 +20,7 @@ module Commands
     , defaultParseErrorText
     , defaultHelpText
     , handleCommand
+    , handleCommandWithAliases
     , customRestArg
     ) where
 
@@ -252,15 +253,31 @@ handleCommand
     -> [command]
     -> D.DiscordHandler Bool
 handleCommand prefix commandName commandArgs commandHandler errorHandler message commands
+    = handleCommandWithAliases prefix (\cmd -> [commandName cmd]) commandArgs commandHandler errorHandler message commands
+
+handleCommandWithAliases
+    :: Text
+    -> (command -> [Text])
+    -> (command -> ArgParser a)
+    -> (a -> D.Message -> D.DiscordHandler ())
+    -> Maybe (ErrorHandler command a)
+    -> D.Message
+    -> [command]
+    -> D.DiscordHandler Bool
+handleCommandWithAliases prefix commandNames commandArgs commandHandler errorHandler message commands
     = do
         commandMatches <- filterM
-            (\command -> isCommand prefix (commandName command) message)
+            (\command -> anyCommand prefix (commandNames command) message)
             commands
         case commandMatches of
             (command : _) -> do
+                let primaryNames = commandNames command
+                let primaryName = case primaryNames of
+                        (name:_) -> name
+                        [] -> error "Command has no names"
                 case
                         parseArgs prefix
-                                  commandName
+                                  (const primaryName)
                                   commandArgs
                                   command
                                   (D.messageText message)
@@ -269,7 +286,7 @@ handleCommand prefix commandName commandArgs commandHandler errorHandler message
                             defaultArgErrorText
                             errorHandler
                             prefix
-                            commandName
+                            (const primaryName)
                             commandArgs
                             command
                             (D.messageText message)
@@ -277,4 +294,6 @@ handleCommand prefix commandName commandArgs commandHandler errorHandler message
                         Right cas -> commandHandler cas message
                 pure True
             _ -> pure False
+  where
+    anyCommand prefix names msg = or <$> mapM (\name -> isCommand prefix name msg) names
 

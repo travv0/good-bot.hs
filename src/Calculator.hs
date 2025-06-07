@@ -4,6 +4,7 @@ module Calculator
     ( CalcExpr
     , eval
     , calcExpr
+    , CalcError(..)
     ) where
 
 import           Commands                       ( Parser
@@ -11,6 +12,11 @@ import           Commands                       ( Parser
                                                 , num
                                                 )
 import           Control.Applicative            ( (<|>) )
+import           Control.Monad.Except           ( ExceptT
+                                                , runExceptT
+                                                , throwError
+                                                )
+import           Control.Monad.IO.Class         ( liftIO )
 import           Data.Fixed                     ( mod' )
 import           Data.Functor                   ( ($>)
                                                 , (<&>)
@@ -185,24 +191,37 @@ suffixOp =
     P.choice
             (map
                 P.try
-                [ P.char '%' $> Percent
+                [ P.string "!!" $> DoubleFactorial
                 , P.char '!' $> Factorial
-                , P.string "!!" $> Factorial
+                , P.char '%' $> Percent
                 ]
             )
         <*  P.space
         <?> "suffix"
 
-reduceExpr :: CalcExpr -> IO Double
+data CalcError = DivisionByZero | InvalidOperation String
+    deriving (Show, Eq)
+
+reduceExpr :: CalcExpr -> ExceptT CalcError IO Double
 reduceExpr (CalcVal v              ) = pure v
 
 reduceExpr (CalcBinary e1 Plus   e2) = (+) <$> reduceExpr e1 <*> reduceExpr e2
 reduceExpr (CalcBinary e1 Minus  e2) = (-) <$> reduceExpr e1 <*> reduceExpr e2
 reduceExpr (CalcBinary e1 Times  e2) = (*) <$> reduceExpr e1 <*> reduceExpr e2
-reduceExpr (CalcBinary e1 Divide e2) = (/) <$> reduceExpr e1 <*> reduceExpr e2
+reduceExpr (CalcBinary e1 Divide e2) = do
+    v1 <- reduceExpr e1
+    v2 <- reduceExpr e2
+    if v2 == 0
+        then throwError DivisionByZero
+        else pure $ v1 / v2
 reduceExpr (CalcBinary e1 Exponent e2) =
     (**) <$> reduceExpr e1 <*> reduceExpr e2
-reduceExpr (CalcBinary e1 Mod e2) = mod' <$> reduceExpr e1 <*> reduceExpr e2
+reduceExpr (CalcBinary e1 Mod e2) = do
+    v1 <- reduceExpr e1
+    v2 <- reduceExpr e2
+    if v2 == 0
+        then throwError DivisionByZero
+        else pure $ mod' v1 v2
 
 reduceExpr (CalcPrefix Sqrt e   ) = sqrt <$> reduceExpr e
 reduceExpr (CalcPrefix Cbrt e   ) = (**) <$> reduceExpr e <*> pure (1 / 3)
@@ -229,11 +248,17 @@ reduceExpr (CalcPrefix Radians e) = do
     pure $ v * pi / 180
 reduceExpr (CalcPrefix Neg       e) = negate <$> reduceExpr e
 reduceExpr (CalcPrefix Fact      e) = factorial <$> reduceExpr e
-reduceExpr (CalcPrefix RandFloat e) = randf =<< reduceExpr e
-reduceExpr (CalcPrefix RandInt   e) = randi =<< reduceExpr e
+reduceExpr (CalcPrefix RandFloat e) = do
+    n <- reduceExpr e
+    liftIO $ randf n
+reduceExpr (CalcPrefix RandInt   e) = do
+    n <- reduceExpr e
+    liftIO $ randi n
 reduceExpr (CalcPrefix Rand      e) = do
     n <- reduceExpr e
-    if n == fromIntegral (round n :: Integer) then randi n else randf n
+    if n == fromIntegral (round n :: Integer) 
+        then liftIO $ randi n 
+        else liftIO $ randf n
 
 reduceExpr (CalcSuffix e Percent        ) = reduceExpr e <&> (* 0.01)
 reduceExpr (CalcSuffix e Factorial      ) = factorial <$> reduceExpr e
@@ -253,5 +278,5 @@ doubleFactorial n =
     let k = n / 2
     in  factorial k * 2 ** k * (pi / 2) ** (1 / 4 * (-1 + cos (n * pi)))
 
-eval :: CalcExpr -> IO Double
-eval = reduceExpr
+eval :: CalcExpr -> IO (Either CalcError Double)
+eval = runExceptT . reduceExpr
