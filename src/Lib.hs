@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Lib
     ( goodbot
@@ -33,7 +34,10 @@ import           Control.Monad                  ( filterM
 import           Control.Monad.Catch            ( catchAll )
 import           Control.Monad.Reader           ( ReaderT
                                                 , ask
+                                                , asks
                                                 , runReaderT
+                                                , lift
+                                                , liftIO
                                                 )
 import           Data.Maybe                     ( fromMaybe )
 import           Data.Text                      ( Text )
@@ -49,6 +53,7 @@ import           Database                       ( Db(..)
                                                 , loadDb
                                                 )
 import qualified Discord                       as D
+import qualified Discord.Types                 as D
 import           DiscordHelper                  ( createMessage
                                                 , isFromSelf
                                                 , messageContains
@@ -142,9 +147,9 @@ messageCreate message = do
             config <- ask
             
             -- Check if this looks like a command
-            let messageText = D.messageText message
+            let messageText = D.messageContent message
             let looksLikeCommand = any (\cmd -> 
-                    any (\name -> prefix <> name `T.isPrefixOf` messageText) 
+                    any (\name -> (prefix <> name) `T.isPrefixOf` messageText) 
                         (commandNames cmd)) commands
             
             -- Apply rate limiting for commands

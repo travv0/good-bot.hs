@@ -40,7 +40,7 @@ updateStatus activityType mactivity =
     D.sendCommand $ D.UpdateStatus $ D.UpdateStatusOpts
         { D.updateStatusOptsSince     = Nothing
         , D.updateStatusOptsActivities = case mactivity of
-            Just activity -> [D.Activity activity activityType Nothing]
+            Just activity -> [D.Activity { D.activityName = activity, D.activityType = activityType, D.activityUrl = Nothing }]
             Nothing       -> []
         , D.updateStatusOptsNewStatus = D.UpdateStatusOnline
         , D.updateStatusOptsAFK       = False
@@ -68,7 +68,7 @@ isFromSelf message = do
     pure $ D.userId (D.cacheCurrentUser cache) == D.userId
         (D.messageAuthor message)
 
-isFromUser :: D.Snowflake -> Predicate
+isFromUser :: D.UserId -> Predicate
 isFromUser userId message = pure $ D.userId (D.messageAuthor message) == userId
 
 isFromBot :: Predicate
@@ -133,7 +133,7 @@ createMessage channelId replyingToId message =
                     replyingToId
                 }
 
-createGuildBan :: D.GuildId -> D.Snowflake -> Text -> D.DiscordHandler ()
+createGuildBan :: D.GuildId -> D.UserId -> Text -> D.DiscordHandler ()
 createGuildBan guildId userId banMessage = restCall $ D.CreateGuildBan
     guildId
     userId

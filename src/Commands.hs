@@ -280,7 +280,7 @@ handleCommandWithAliases prefix commandNames commandArgs commandHandler errorHan
                                   (const primaryName)
                                   commandArgs
                                   command
-                                  (D.messageText message)
+                                  (D.messageContent message)
                     of
                         Left e -> replyTo message $ fromMaybe
                             defaultArgErrorText
@@ -289,7 +289,7 @@ handleCommandWithAliases prefix commandNames commandArgs commandHandler errorHan
                             (const primaryName)
                             commandArgs
                             command
-                            (D.messageText message)
+                            (D.messageContent message)
                             e
                         Right cas -> commandHandler cas message
                 pure True

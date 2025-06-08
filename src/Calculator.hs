@@ -1,7 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Calculator
-    ( CalcExpr
+    ( CalcExpr(..)
+    , BinaryOp(..)
+    , PrefixOp(..)
+    , SuffixOp(..)
     , eval
     , calcExpr
     , CalcError(..)

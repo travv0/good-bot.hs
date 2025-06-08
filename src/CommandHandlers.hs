@@ -28,7 +28,9 @@ import           Commands                       ( ArgParser
                                                 , customRestArg
                                                 , defaultHelpText
                                                 , int
+                                                , num
                                                 , optArg
+                                                , optMultiArg
                                                 , optRestArg
                                                 , restArg
                                                 , str
@@ -54,6 +56,7 @@ import           Database                       ( Db(..)
                                                 )
 import qualified Discord                       as D
 import qualified Discord.Types                 as D
+import qualified Discord.Internal.Types.Prelude as D
 import           DiscordHelper                  ( Predicate
                                                 , createGuildBan
                                                 , createMessage
@@ -83,6 +86,7 @@ data Command
     | CompetingIn
     | Meanness
     | Calc
+    | Sum
     | RR
     | Help
     deriving (Show, Eq, Enum, Bounded)
@@ -99,6 +103,7 @@ data CommandArgs
     | CompetingInArgs (Maybe Text)
     | MeannessArgs (Maybe Int)
     | CalcArgs CalcExpr
+    | SumArgs (Maybe [Double])
     | HelpArgs (Maybe Text)
     deriving (Show, Eq)
 
@@ -140,6 +145,7 @@ commandArgs Calc =
         <$> customRestArg "input"
                           "Expression for calculator to evaluate."
                           calcExpr
+commandArgs Sum = SumArgs <$> optMultiArg "nums" "Some numbers to sum." num
 commandArgs Help =
     HelpArgs <$> optArg "command" "Command to show help for." str
 
@@ -159,6 +165,7 @@ commandHelpText CompetingIn = "Set bot's activity to Competing In."
 commandHelpText Meanness
     = "Set bot's meanness from 0-11 or display current meanness if no argument given."
 commandHelpText Calc = "A basic calculator."
+commandHelpText Sum  = "Sum some numbers."
 commandHelpText Help =
     "Show this help or show detailed help for a given command."
 
@@ -176,13 +183,14 @@ commandFunc (CompetingInArgs status) =
     setActivity D.ActivityTypeCompeting status
 commandFunc (MeannessArgs meanness) = setMeanness meanness
 commandFunc (CalcArgs     expr    ) = calc expr
+commandFunc (SumArgs      xs      ) = sumNums xs
 commandFunc (HelpArgs     command ) = showHelp command
 
 commands :: [Command]
 commands = [minBound .. maxBound]
 
 isFromCarl :: Predicate
-isFromCarl = isFromUser 235148962103951360
+isFromCarl = isFromUser (D.DiscordId (D.Snowflake 235148962103951360))
 
 predicates :: [(Predicate, CommandFunc)]
 predicates =
@@ -202,7 +210,7 @@ mentionsMe message = do
 russianRoulette :: CommandFunc
 russianRoulette message = do
     chamber <- liftIO $ (`mod` 6) <$> (randomIO :: IO Int)
-    lift $ case (chamber, D.messageGuild message) of
+    lift $ case (chamber, D.messageGuildId message) of
         (0, Just gId) -> do
             replyTo message response
             createGuildBan gId (D.userId $ D.messageAuthor message) response
@@ -327,3 +335,7 @@ calc expr message = do
         Left DivisionByZero -> "Error: Division by zero"
         Left (InvalidOperation err) -> "Error: " <> T.pack err
         Right value -> T.pack $ show value
+
+sumNums :: Maybe [Double] -> CommandFunc
+sumNums (Just xs) message = lift . replyTo message . T.pack . show $ sum xs
+sumNums Nothing   message = lift . replyTo message . T.pack $ show (0 :: Int)

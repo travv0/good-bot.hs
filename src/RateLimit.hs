@@ -22,6 +22,7 @@ import           Data.Time                      ( UTCTime
                                                 , getCurrentTime
                                                 )
 import qualified Discord                       as D
+import qualified Discord.Types                 as D
 import           Data.Text                      ( Text )
 
 data RateLimitConfig = RateLimitConfig
@@ -36,14 +37,14 @@ defaultRateLimitConfig = RateLimitConfig
     , rateLimitWindowSeconds = 60
     }
 
-type UserRequests = Map D.Snowflake [(UTCTime, Text)]
+type UserRequests = Map D.UserId [(UTCTime, Text)]
 type RateLimiter = TVar UserRequests
 
 createRateLimiter :: IO RateLimiter
 createRateLimiter = newTVarIO Map.empty
 
 -- Returns True if the request is allowed, False if rate limited
-checkRateLimit :: RateLimitConfig -> RateLimiter -> D.Snowflake -> Text -> IO Bool
+checkRateLimit :: RateLimitConfig -> RateLimiter -> D.UserId -> Text -> IO Bool
 checkRateLimit config limiter userId command = do
     now <- getCurrentTime
     atomically $ do
