@@ -37,12 +37,26 @@ import qualified Discord.Requests              as D
 updateStatus :: D.ActivityType -> Maybe Text -> D.DiscordHandler ()
 updateStatus activityType mactivity =
     D.sendCommand $ D.UpdateStatus $ D.UpdateStatusOpts
-        { D.updateStatusOptsSince     = Nothing
-        , D.updateStatusOptsGame      = case mactivity of
-            Just activity -> Just $ D.Activity activity activityType Nothing
-            Nothing       -> Nothing
-        , D.updateStatusOptsNewStatus = D.UpdateStatusOnline
-        , D.updateStatusOptsAFK       = False
+        { D.updateStatusOptsSince      = Nothing
+        , D.updateStatusOptsActivities = case mactivity of
+            Just activityName -> [D.Activity
+                { D.activityName          = activityName
+                , D.activityType          = activityType
+                , D.activityUrl           = Nothing
+                , D.activityCreatedAt     = 0
+                , D.activityTimeStamps    = Nothing
+                , D.activityApplicationId = Nothing
+                , D.activityDetails       = Nothing
+                , D.activityState         = Nothing
+                , D.activityEmoji         = Nothing
+                , D.activityParty         = Nothing
+                , D.activityInstance      = Nothing
+                , D.activityFlags         = Nothing
+                , D.activityButtons       = Nothing
+                }]
+            Nothing -> []
+        , D.updateStatusOptsNewStatus  = D.UpdateStatusOnline
+        , D.updateStatusOptsAFK        = False
         }
 
 type Predicate = D.Message -> D.DiscordHandler Bool
@@ -86,13 +100,13 @@ isCommand prefix command message = do
 
 messageStartsWith :: Text -> Predicate
 messageStartsWith text =
-    pure . (text `T.isPrefixOf`) . T.toLower . D.messageText
+    pure . (text `T.isPrefixOf`) . T.toLower . D.messageContent
 
 messageEquals :: Text -> Predicate
-messageEquals text = pure . (text ==) . T.toLower . D.messageText
+messageEquals text = pure . (text ==) . T.toLower . D.messageContent
 
 messageContains :: Text -> Predicate
-messageContains text = pure . (text `T.isInfixOf`) . T.toLower . D.messageText
+messageContains text = pure . (text `T.isInfixOf`) . T.toLower . D.messageContent
 
 writeLog :: Text -> D.DiscordHandler ()
 writeLog l = do
@@ -113,7 +127,7 @@ restCall request = do
 
 replyTo :: D.Message -> Text -> D.DiscordHandler ()
 replyTo replyingTo =
-    createMessage (D.messageChannel replyingTo) (Just $ D.messageId replyingTo)
+    createMessage (D.messageChannelId replyingTo) (Just $ D.messageId replyingTo)
 
 createMessage
     :: D.ChannelId -> Maybe D.MessageId -> Text -> D.DiscordHandler ()

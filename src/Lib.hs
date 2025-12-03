@@ -76,6 +76,7 @@ import           Data.Time                      ( defaultTimeLocale
 import           Data.Yaml                      ( decodeFileEither )
 import qualified Discord                       as D
 import qualified Discord.Internal.Rest         as D
+import           Discord.Internal.Types.Prelude ( Snowflake(..) )
 import           DiscordHelper                  ( Predicate
                                                 , createGuildBan
                                                 , createMessage
@@ -311,7 +312,7 @@ commands :: [Command]
 commands = [minBound .. maxBound]
 
 isFromCarl :: Predicate
-isFromCarl = isFromUser 235148962103951360
+isFromCarl = isFromUser (D.DiscordId (Snowflake 235148962103951360))
 
 predicates :: [(Predicate, CommandFunc)]
 predicates =
@@ -368,7 +369,7 @@ typingStart (D.TypingInfo userId channelId _utcTime) = do
 russianRoulette :: CommandFunc
 russianRoulette message = do
     chamber <- liftIO $ (`mod` 6) <$> (randomIO :: IO Int)
-    lift $ case (chamber, D.messageGuild message) of
+    lift $ case (chamber, D.messageGuildId message) of
         (0, Just gId) -> do
             replyTo message response
             createGuildBan gId (D.userId $ D.messageAuthor message) response
@@ -575,6 +576,8 @@ setActivity activityType (Just status) message = do
         D.ActivityTypeListening -> "Listening to"
         D.ActivityTypeStreaming -> "Streaming"
         D.ActivityTypeCompeting -> "Competing in"
+        D.ActivityTypeWatching  -> "Watching"
+        D.ActivityTypeCustom    -> ""
 
 setMeanness :: Maybe Int -> CommandFunc
 
